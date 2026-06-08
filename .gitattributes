@@ -1,0 +1,3 @@
+# Normalize all text files to LF in the repository (ICF canonical line ending).
+* text=auto eol=lf
+*.icf text eol=lf

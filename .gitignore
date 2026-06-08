@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Local reference material (not part of the published library)
+icfjs_prompt.md
+icf_format_specification_v_1.md
+icx_index_specification_v_1.md

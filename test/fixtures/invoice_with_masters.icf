@@ -1,0 +1,34 @@
+@kind icf
+@version 1.0
+@encoding utf-8
+@delimiter comma
+@escape backslash
+
+@schema
+
+masters:
+
+  Vendor[]:
+    [VendorID, Name, Phone]
+
+  Project:
+    [ProjectID, Location, Party]
+
+documentindex:
+  [InvoiceNo, VendorRef, ProjectRef, Note]
+
+@masters
+
+Vendor:
+  - VEN001, ABC Traders, 9876543210
+  - VEN002, XYZ Suppliers, 9988776655
+
+Project:
+  = PRJ001, Coimbatore, ABC Constructions
+
+@data
+
+@record id=D001 note=South\ Zone
+
+documentindex:
+  = INV001, Vendor:VEN001, Project:PRJ001, Delivery\: Immediate

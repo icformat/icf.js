@@ -1,0 +1,40 @@
+@kind icf
+@version 1.0
+@encoding utf-8
+@delimiter comma
+@escape backslash
+
+@specification https://icformat.org/specification/v1
+
+@schema
+
+folderdata:
+  [folderid, foldername]
+
+indexdata:
+
+  documentindex:
+    [InvoiceNo, InvoiceDate]
+
+  lineindex:
+
+    BillItems[]:
+      [SNo, Item, Quantity]
+
+@data
+
+@record
+
+folderdata:
+  = F001, Invoices
+
+indexdata:
+
+  documentindex:
+    = INV001, 2026-05-01
+
+  lineindex:
+
+    BillItems:
+      - 1, Cement, 100
+      - 2, Steel Rod, 50

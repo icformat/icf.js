@@ -1,0 +1,46 @@
+@kind icf
+@version 1.0
+@encoding utf-8
+@delimiter comma
+@escape backslash
+
+@records 2
+
+@metadata
+
+title: DMS Export
+creator: Administrator
+
+@schema id=Masters
+
+Vendor[]:
+  [VendorID, Phone]
+
+Project[]:
+  [ProjectID, Location]
+
+@schema id=Invoice
+
+documentindex:
+  [InvoiceNo, VendorRef]
+
+@masters
+
+Vendor:
+  - VEN100, 9876543210
+  - VEN200, 9898989898
+
+Project:
+  - PRJ001, Coimbatore
+
+@data
+
+@record schema=Invoice id=INV001
+
+documentindex:
+  = INV-001, Vendor:VEN100
+
+@record schema=Invoice id=INV002
+
+documentindex:
+  = INV-002, Vendor:VEN200

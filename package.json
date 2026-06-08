@@ -1,0 +1,61 @@
+{
+  "name": "icf.js",
+  "version": "1.0.0",
+  "description": "Zero-dependency browser library to parse, validate, build, write, and index Indent Comma Format (ICF) and generate ICX companion indexes.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Edison Williams",
+  "homepage": "https://icformat.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/icformat/icf.js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/icformat/icf.js/issues"
+  },
+  "keywords": [
+    "icf",
+    "icx",
+    "indent-comma-format",
+    "parser",
+    "serializer",
+    "schema",
+    "browser",
+    "zero-dependency"
+  ],
+  "main": "./dist/icf.js",
+  "module": "./dist/icf.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/icf.min.js",
+  "jsdelivr": "./dist/icf.min.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/icf.js",
+      "default": "./dist/icf.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.42",
+    "happy-dom": "^15.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
