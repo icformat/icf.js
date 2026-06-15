@@ -385,8 +385,25 @@ export class IcfParser {
       const child = schema.getTopLevelNode(name);
       if (child) return child;
     }
+    // nested master tables: the type is declared under a grouping/wrapper node
+    // (e.g. `masterindextables:` containing `m0000002:` …). Search each schema
+    // tree for the first descendant whose name matches.
+    for (const schema of this.schemas.asMap().values()) {
+      const nested = this.findDescendantNode(schema.getRoot(), name);
+      if (nested) return nested;
+    }
     // shared index fallback
     return this.synthIndexNode(name, true);
+  }
+
+  /** Depth-first search for the first descendant of `node` named `name`. */
+  private findDescendantNode(node: SchemaNode, name: string): SchemaNode | null {
+    for (const child of node.getChildren().values()) {
+      if (child.name === name) return child;
+      const deeper = this.findDescendantNode(child, name);
+      if (deeper) return deeper;
+    }
+    return null;
   }
 
   private handleMastersLine(trimmed: string, _indent: number, lineNo: number): void {

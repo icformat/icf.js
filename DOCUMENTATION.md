@@ -10,6 +10,34 @@ Zero-dependency **browser** library to parse, validate, build, write, and index 
 
 ---
 
+## Install
+
+Published on npm as [`icf.js`](https://www.npmjs.com/package/icf.js) (current version **1.0.0**).
+
+```bash
+npm install icf.js
+```
+
+```ts
+import { parse, validate, write } from 'icf.js';
+```
+
+No build step required — use it straight from a CDN. Pin a major version (`@1`) for stability:
+
+```html
+<!-- ES module via jsDelivr -->
+<script type="module">
+  import { parse } from 'https://cdn.jsdelivr.net/npm/icf.js@1/+esm';
+</script>
+
+<!-- …or the global IIFE build, exposing window.ICF -->
+<script src="https://cdn.jsdelivr.net/npm/icf.js@1"></script>
+```
+
+The same files are served by unpkg (`https://unpkg.com/icf.js@1`). TypeScript types ship in the package (`dist/index.d.ts`).
+
+---
+
 ## Quick start
 
 ```ts
@@ -314,7 +342,7 @@ A JS-idiomatic class: public fields, fluent setters (`setIndentWidth`, `setNewli
 Canonical content for checksums (spec §19): re-serializes with default options and slices from the line that is exactly `@schema` or starts with `@schema ` (so `@schema-url` is excluded). UTF-8 encoded.
 
 ### `findMasterTypeSchema(schemas, typeName): SchemaNode | null`
-Finds the schema node describing a master type (legacy `masters:` container first, then top-level collections) — the writer's mirror of the parser lookup.
+Finds the schema node describing a master type — the writer's mirror of the parser lookup. Resolution order: legacy `masters:` container first, then top-level collections, then a depth-first search for a descendant declared under a grouping/wrapper node (nested master tables, e.g. `masterindextables:` containing `m0000002:` …).
 
 ### `SchemaInference`
 | Member | Description |
@@ -406,7 +434,7 @@ All extend the native `Error`.
 - **`@metadata` section** (spec §5) — appears before the first `@schema`; arbitrary `key: value` entries (colon syntax). Accessed via `IcfMetadata.userMetadataAsMap()`.
 - **Multiple schemas** (spec §7) — records pick one via `@record schema=...`; records without it use the default schema.
 - **Preformatted text blocks** (spec §18) — `<<TAG` opens a verbatim region ending at `TAG>>` at the same indent. Reserved characters carry no meaning inside. The block fills a leaf's only field; the parser strips the opening tag's indentation, the writer re-applies it.
-- **Master data** (spec §13) — `Type:Id` references stay as plain strings; `IcfMasters.resolveReference(...)` resolves them on demand. Two schema styles (legacy `masters:` container, new top-level collections) both work.
+- **Master data** (spec §13) — `Type:Id` references stay as plain strings; `IcfMasters.resolveReference(...)` resolves them on demand. Three schema styles all work: the legacy `masters:` container, top-level collections, and **nested master tables** (a type declared under any grouping/wrapper node, e.g. `masterindextables:` → `m0000002:`); the parser/writer resolve a master type to the first schema descendant of that name.
 - **Row markers** (spec §9/§12) — `=` for single-row objects, `-` for collection rows; the writer picks by `SchemaNode.isCollection()`.
 - **Compact Object Syntax** (spec §12) — `Vendor:VEN001, ABC, City` ≡ `Vendor:` + `= VEN001, ABC, City`. No whitespace before the colon; the name part contains no whitespace.
 - **UTF-8 BOM** (spec §24) — a leading U+FEFF is silently stripped on parse.

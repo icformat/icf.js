@@ -51,6 +51,39 @@ describe('spec compliance', () => {
     expect(validate(bad).getErrors().some((m) => m.code === 'ROW_ON_CONTAINER')).toBe(true);
   });
 
+  it('resolves master types nested under a grouping node', () => {
+    const icf = [
+      '@kind icf',
+      '@schema id=masterindextables',
+      '',
+      'masterindextables:',
+      '  m0000002:',
+      '    [masterindexvaluesid, masterid]',
+      '  m0000001:',
+      '    [masterindexvaluesid, masterid]',
+      '',
+      '@masters',
+      '',
+      'm0000002:',
+      '  = 1, 10',
+      'm0000001:',
+      '  = 2, 5',
+      '',
+      '@data',
+      '',
+    ].join('\n');
+    // The nested declaration is now recognised — no UNKNOWN_MASTER_TYPE warning.
+    expect(validate(icf).getMessages().some((m) => m.code === 'UNKNOWN_MASTER_TYPE')).toBe(false);
+    // …and the fields resolve from the nested node, so values map to names.
+    const m2 = parse(icf).getMasters().getType('m0000002')!;
+    expect(JSON.parse(m2.toJsonString())).toEqual([{ masterindexvaluesid: '1', masterid: '10' }]);
+    // the writer mirrors the resolver, so it round-trips through write → parse.
+    const round = parse(write(parse(icf)));
+    expect(JSON.parse(round.getMasters().getType('m0000001')!.toJsonString())).toEqual([
+      { masterindexvaluesid: '2', masterid: '5' },
+    ]);
+  });
+
   it('falls back to the shared index[] schema for ICX-style data', () => {
     const icx = [
       '@kind icx',

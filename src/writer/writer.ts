@@ -76,6 +76,21 @@ export function findMasterTypeSchema(
     const child = schema.getTopLevelNode(typeName);
     if (child) return child;
   }
+  // nested master tables: the type is declared under a grouping/wrapper node.
+  for (const schema of schemas.asMap().values()) {
+    const nested = findDescendantSchemaNode(schema.getRoot(), typeName);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+/** Depth-first search for the first descendant of `node` named `name`. */
+function findDescendantSchemaNode(node: SchemaNode, name: string): SchemaNode | null {
+  for (const child of node.getChildren().values()) {
+    if (child.name === name) return child;
+    const deeper = findDescendantSchemaNode(child, name);
+    if (deeper) return deeper;
+  }
   return null;
 }
 

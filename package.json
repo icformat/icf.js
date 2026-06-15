@@ -1,6 +1,6 @@
 {
   "name": "icf.js",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Zero-dependency browser library to parse, validate, build, write, and index Indent Comma Format (ICF) and generate ICX companion indexes.",
   "type": "module",
   "license": "MIT",
