@@ -12,16 +12,37 @@
 import { IcfDocument, IcfRecord } from '../document.js';
 import { IcfMetadata } from '../model/metadata.js';
 import { IcfMasters } from '../model/masters.js';
-import { IcfArray, IcfObject } from '../model/node.js';
+import { IcfArray, IcfNode, IcfObject } from '../model/node.js';
 import { IcfSchema, SchemaNode } from '../model/schema.js';
 import { compute, isSupported } from '../checksum.js';
+import { REFERENCE_PATTERN } from '../resolver.js';
+import { joinTags } from '../tags.js';
 import { IcfWriter, canonicalContentBytes } from './writer.js';
 
+/** Options for {@link IcxGenerator.generate} (ICX v1.2 §7–§8). */
+export interface IcxGenerateOptions {
+  /** Harvest typed master references as `Tags` (default `true`). */
+  tags?: boolean;
+  /**
+   * Supplies the `Summary` for a record; a non-null result wins over the
+   * record's `summary=` attribute. Applies to `@data` records only —
+   * master entries have no attributes and get an empty summary.
+   */
+  summaryProvider?: (record: IcfRecord) => string | null | undefined;
+  /**
+   * Supplies extra tags for a record, appended after the harvested tags
+   * and deduplicated. Applies to `@data` records only.
+   */
+  tagProvider?: (record: IcfRecord) => string[] | null | undefined;
+}
+
 /** Options for {@link IcxGenerator.generateWithChecksums}. */
-export interface IcxChecksumOptions {
+export interface IcxChecksumOptions extends IcxGenerateOptions {
   sourceFileName?: string;
   sourceText?: string;
 }
+
+export { joinTags, splitTags } from '../tags.js';
 
 interface MasterRowRef {
   type: string;
@@ -56,11 +77,16 @@ export class IcxGenerator {
   ];
   static readonly SCHEMA_ATTRIBUTE = 'schema';
   static readonly RECORD_TYPE_ATTRIBUTE = 'type';
-  static readonly DEFAULT_ICX_VERSION = '1.1';
+  static readonly DEFAULT_ICX_VERSION = '1.2';
+  /** Optional ICX v1.2 index fields. */
+  static readonly TAGS_FIELD = 'Tags';
+  static readonly SUMMARY_FIELD = 'Summary';
+  /** Record attribute the generator reads summaries from (ICX v1.2 §8). */
+  static readonly SUMMARY_ATTRIBUTE = 'summary';
 
   /** Builds the ICX index with empty positional and checksum fields. */
-  generate(source: IcfDocument, sourceFileName?: string): IcfDocument {
-    return this.buildBase(source, sourceFileName).doc;
+  generate(source: IcfDocument, sourceFileName?: string, options: IcxGenerateOptions = {}): IcfDocument {
+    return this.buildBase(source, sourceFileName, options).doc;
   }
 
   /**
@@ -71,9 +97,14 @@ export class IcxGenerator {
    */
   async generateWithChecksums(source: IcfDocument, options: IcxChecksumOptions = {}): Promise<IcfDocument> {
     const { sourceFileName, sourceText } = options;
-    const base = this.buildBase(source, sourceFileName);
+    const base = this.buildBase(source, sourceFileName, options);
     const { meta, hashMethod } = base;
     const supported = isSupported(hashMethod);
+
+    // @sourcebytes: total size of the literal source text (ICX v1.2 §5)
+    if (sourceText != null) {
+      meta.put('sourcebytes', String(utf8(sourceText).length));
+    }
 
     // @sourcechecksum: copy the ICF's own @checksum if present, else compute
     const existing = source.getMetadata().getChecksum();
@@ -117,7 +148,7 @@ export class IcxGenerator {
 
   // ---- construction -----------------------------------------------------
 
-  private buildBase(source: IcfDocument, sourceFileName?: string): BuildResult {
+  private buildBase(source: IcfDocument, sourceFileName?: string, options: IcxGenerateOptions = {}): BuildResult {
     const meta = new IcfMetadata();
     meta.put('kind', 'icx');
     meta.put('version', IcxGenerator.DEFAULT_ICX_VERSION);
@@ -130,10 +161,14 @@ export class IcxGenerator {
     const total = source.getMasters().totalEntryCount() + source.getRecordCount();
     meta.put('records', String(total));
 
+    const harvestTags = options.tags !== false;
     const schema = new IcfSchema();
     const data = new IcfObject();
     const masterRowRefs: MasterRowRef[] = [];
     const recordRowRefs: RecordRowRef[] = [];
+    // per-row optional cells, applied in a second pass (ICX v1.2 §6: the
+    // Tags/Summary columns exist only when at least one row has content)
+    const optionalCells: Array<{ row: IcfObject; tags: string; summary: string }> = [];
 
     // master index collections
     const masters = source.getMasters();
@@ -145,6 +180,8 @@ export class IcxGenerator {
         const row = arr.addObject();
         this.fillIndexRow(row, firstFieldValue(entry), '');
         masterRowRefs.push({ type, entry, row });
+        const tags = harvestTags ? harvestReferenceTags(entry, masters) : [];
+        optionalCells.push({ row, tags: joinTags(tags), summary: '' });
       }
     }
 
@@ -156,6 +193,29 @@ export class IcxGenerator {
         const row = arr.addObject();
         this.fillIndexRow(row, rec.getId() ?? '', rec.getUuid() ?? '');
         recordRowRefs.push({ record: rec, row });
+        const tags = harvestTags ? harvestReferenceTags(rec.getData(), masters) : [];
+        for (const extra of options.tagProvider?.(rec) ?? []) {
+          if (!tags.includes(extra)) tags.push(extra);
+        }
+        const summary =
+          options.summaryProvider?.(rec) ?? rec.getAttribute(IcxGenerator.SUMMARY_ATTRIBUTE) ?? '';
+        optionalCells.push({ row, tags: joinTags(tags), summary });
+      }
+    }
+
+    // second pass: add the optional columns only when they carry content
+    const anyTags = optionalCells.some((c) => c.tags !== '');
+    const anySummaries = optionalCells.some((c) => c.summary !== '');
+    if (anyTags || anySummaries) {
+      for (const node of schema.getRoot().getChildren().values()) {
+        const fields = [...node.getFields()];
+        if (anyTags) fields.push(IcxGenerator.TAGS_FIELD);
+        if (anySummaries) fields.push(IcxGenerator.SUMMARY_FIELD);
+        node.setFields(fields);
+      }
+      for (const cell of optionalCells) {
+        if (anyTags) cell.row.set(IcxGenerator.TAGS_FIELD, cell.tags);
+        if (anySummaries) cell.row.set(IcxGenerator.SUMMARY_FIELD, cell.summary);
       }
     }
 
@@ -201,6 +261,33 @@ export class IcxGenerator {
     const firstNode = schema ? [...schema.getTopLevelNodes().keys()][0] : undefined;
     return firstNode ?? 'record';
   }
+}
+
+/**
+ * Collects the typed master references in an object tree (ICX v1.2 §7):
+ * every string value matching the reference pattern whose type prefix is a
+ * declared master type in the source document. Deduped, order-preserving.
+ */
+function harvestReferenceTags(node: IcfNode, masters: IcfMasters): string[] {
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  const walk = (n: IcfNode): void => {
+    if (n.isString()) {
+      const value = n.textValue!;
+      if (REFERENCE_PATTERN.test(value)) {
+        const type = value.slice(0, value.indexOf(':'));
+        if (masters.hasType(type) && !seen.has(value)) {
+          seen.add(value);
+          tags.push(value);
+        }
+      }
+      return;
+    }
+    if (n.isObject()) for (const [, v] of n.fields()) walk(v);
+    else if (n.isArray()) for (const el of n.elements()) walk(el);
+  };
+  walk(node);
+  return tags;
 }
 
 function getOrCreateArray(data: IcfObject, name: string): IcfArray {

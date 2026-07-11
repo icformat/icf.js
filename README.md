@@ -10,7 +10,8 @@ A small, **zero-dependency browser & Node library** (written in TypeScript) to p
 - 📝 ICF **v1.1**: schema annotations (`!indexes` `!defaults` `!constraints` `!expressions`), row `!overrides`, primary objects, primary-first reference resolution, multiline rows
 - 🔐 Self-describing checksums (`sha256`, `crc32` built in; pluggable registry)
 - 🗂️ ICX index generation as a normal ICF document
-- 📜 ICF v1.1 + ICX v1 — see the [specifications](https://icformat.org)
+- 🏷️ ICX **v1.2**: auto-harvested `Tags` + `Summary` index fields for AI-harness search, `writeResolved` export
+- 📜 ICF v1.1 + ICX v1.2 — see the [specifications](https://icformat.org)
 
 > ICF combines the compactness of CSV, the readability of YAML, and the hierarchy of JSON — by declaring a schema once and storing records positionally. It is well suited to OCR pipelines, invoice/ERP interchange, document archives, and AI/RAG datasets.
 

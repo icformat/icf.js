@@ -242,10 +242,10 @@ describe('ICF v1.1', () => {
     }
   });
 
-  it('generates ICX at version 1.1 whose write → parse round trip is warning-free', async () => {
-    const { generateIcx } = await import('../src/index.js');
+  it('generates ICX at the current ICX version whose write → parse round trip is warning-free', async () => {
+    const { generateIcx, IcxGenerator } = await import('../src/index.js');
     const icx = generateIcx(parse(V11), 'employee_v11.icf');
-    expect(icx.getMetadata().getVersion()).toBe('1.1');
+    expect(icx.getMetadata().getVersion()).toBe(IcxGenerator.DEFAULT_ICX_VERSION);
     const result = validate(write(icx));
     expect(result.getErrors()).toEqual([]);
     expect(result.getWarnings().map((m) => m.code)).not.toContain('RESERVED_OBJECT_NAME');

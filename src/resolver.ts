@@ -9,8 +9,16 @@
  */
 
 import { IcfArray, IcfNode, IcfObject, IcfString } from './model/node.js';
-import { SchemaNode } from './model/schema.js';
+import { IcfSchema, SchemaNode } from './model/schema.js';
 import type { IcfDocument, IcfRecord } from './document.js';
+
+/**
+ * A value shaped like a `Type:Id` reference (spec v1.1 §44): an identifier
+ * (per the EBNF: letters, digits, `_`, `-`, `.`), a colon, then a
+ * whitespace-free id. Shared by the parser's referential-integrity scan and
+ * the ICX generator's tag harvesting.
+ */
+export const REFERENCE_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*:\S+$/;
 
 /**
  * Resolves a `Type:Id` reference for a record (spec §45 order): the record's
@@ -74,6 +82,104 @@ export function resolveRecordData(document: IcfDocument, record: IcfRecord): Icf
   const schema = document.getSchemas().get(record.getSchemaId()) ?? document.getSchemas().getDefault();
   const resolved = cloneResolved(record.getData(), schema?.getRoot() ?? null);
   return resolved as IcfObject;
+}
+
+/**
+ * Clones a schema for **resolved export** (ICX v1.2 companion feature):
+ * every node's field list is extended with `!defaults` keys not already
+ * declared (declared fields first, then extras in declaration order), and
+ * **all annotations are dropped** — in a resolved document the defaults and
+ * overrides are baked into the rows, so the annotations no longer apply.
+ * The input schema is never mutated.
+ */
+export function resolveSchemaForExport(
+  schema: IcfSchema,
+  extraKeys?: Map<SchemaNode, Set<string>>,
+): IcfSchema {
+  const out = new IcfSchema();
+  for (const child of schema.getTopLevelNodes().values()) {
+    out.getRoot().addChild(cloneNodeForExport(child, extraKeys));
+  }
+  return out;
+}
+
+function cloneNodeForExport(node: SchemaNode, extraKeys?: Map<SchemaNode, Set<string>>): SchemaNode {
+  const clone = new SchemaNode(node.name, node.isCollection());
+  const fields = [...node.getFields()];
+  for (const key of node.getDefaults().keys()) {
+    if (!fields.includes(key)) fields.push(key);
+  }
+  for (const key of extraKeys?.get(node) ?? []) {
+    if (!fields.includes(key)) fields.push(key);
+  }
+  clone.setFields(fields);
+  for (const child of node.getChildren().values()) {
+    clone.addChild(cloneNodeForExport(child, extraKeys));
+  }
+  return clone;
+}
+
+/**
+ * Records a row's `!overrides` keys that are not declared fields of its
+ * schema node into `extras` — a resolved export must widen the field list
+ * so those values survive serialization (the spec's own §47 example
+ * overrides a key foreign to the row's object).
+ */
+export function addOverrideKeys(
+  extras: Map<SchemaNode, Set<string>>,
+  node: SchemaNode,
+  row: IcfObject,
+): void {
+  for (const key of row.getOverrides().keys()) {
+    if (node.getFields().includes(key)) continue;
+    let set = extras.get(node);
+    if (!set) {
+      set = new Set();
+      extras.set(node, set);
+    }
+    set.add(key);
+  }
+}
+
+/**
+ * Resolves a single leaf row for export: values copied, `!defaults` of the
+ * schema node filled for absent fields, `!overrides` applied; the returned
+ * row carries no annotations.
+ */
+export function resolveLeafRow(row: IcfObject, schemaNode: SchemaNode | null): IcfObject {
+  return cloneResolved(row, schemaNode && schemaNode.isLeaf() ? schemaNode : null) as IcfObject;
+}
+
+/**
+ * Collects, per schema node, the row `!overrides` keys observed in a
+ * document's records that are not declared fields.
+ */
+export function collectOverrideKeys(document: IcfDocument): Map<SchemaNode, Set<string>> {
+  const extras = new Map<SchemaNode, Set<string>>();
+  const note = (node: SchemaNode, row: IcfObject): void => addOverrideKeys(extras, node, row);
+  const walk = (data: IcfNode, node: SchemaNode | null): void => {
+    if (!node) return;
+    if (data.isArray()) {
+      for (const el of data.elements()) walk(el, node);
+      return;
+    }
+    if (!data.isObject()) return;
+    if (node.isLeaf()) {
+      note(node, data);
+      return;
+    }
+    for (const [name, value] of data.fields()) {
+      walk(value, node.getChild(name) ?? null);
+    }
+  };
+  for (const record of document.getRecords()) {
+    const schema = document.getSchemas().get(record.getSchemaId()) ?? document.getSchemas().getDefault();
+    if (!schema) continue;
+    for (const [name, value] of record.getData().fields()) {
+      walk(value, schema.getRoot().getChild(name) ?? null);
+    }
+  }
+  return extras;
 }
 
 function cloneResolved(node: IcfNode, schemaNode: SchemaNode | null): IcfNode {

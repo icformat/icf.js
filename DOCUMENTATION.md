@@ -1,12 +1,25 @@
 # icf.js — Public API
 
-Zero-dependency **browser & Node** library (written in TypeScript) to parse, validate, build, write, and index **Indent Comma Format (ICF)** text, and generate **ICX** companion indexes. A faithful behavioral port of the Java library [`icfj`](https://github.com/icformat/icfj). Implements **ICF specification v1.1**.
+Zero-dependency **browser & Node** library (written in TypeScript) to parse, validate, build, write, and index **Indent Comma Format (ICF)** text, and generate **ICX** companion indexes. A faithful behavioral port of the Java library [`icfj`](https://github.com/icformat/icfj). Implements **ICF specification v1.1** and **ICX specification v1.2**.
 
 - **Package:** `icf.js` (ESM + CommonJS + IIFE global `window.ICF`, with bundled TypeScript types)
 - **Runtime:** modern browsers / Node ≥ 20 (needs Web Crypto for `sha256`)
 - **Encoding:** UTF-8. A leading BOM is stripped on parse. Inputs and outputs are **strings** (no file/stream I/O).
 
 > This file is the canonical reference for the public API, kept in sync with the source by hand. Any change that adds, renames, or removes an exported member must be reflected here in the same change. See `CLAUDE.md` for the maintenance rule.
+
+---
+
+## What's new in 1.2.0 (ICX spec v1.2)
+
+- **`Tags` / `Summary` index fields** (ICX v1.2 §7–§8): `generateIcx` auto-harvests typed master references from every index row as `Tags` (joined with `+`); `Summary` comes from a `summaryProvider` option or the record's `summary=` attribute. Columns appear only when at least one row has content. Helpers `joinTags(tags)` / `splitTags(cell)` are exported.
+- **`IcxGenerateOptions`**: `generateIcx(source, sourceFileName?, { tags?, summaryProvider?, tagProvider? })`; `IcxChecksumOptions` extends it. `tagProvider` supplies extra tags per record, appended after harvested tags and deduplicated.
+- **Multi-tag validation** (ICX v1.2 §7): the referential-integrity scan resolves a value whole first; on failure a cell containing an unescaped `+` is split and each typed tag validated individually — generated multi-tag indexes round-trip warning-free.
+- **`writeResolved` widening**: master rows are resolved too, and export field lists include observed `!overrides` keys as well as `!defaults` keys.
+- **`@sourcebytes`**: emitted by `generateIcxWithChecksums` when `sourceText` is supplied (UTF-8 byte length).
+- **`tagindex[]` / `summaryindex[]`** (ICX v1.2 §9) parse and round-trip as ordinary collections.
+- **`writeResolved(document)`**: resolved export — records serialized with `!defaults`/`!overrides` baked in, field lists extended, all annotations dropped; the input is never mutated.
+- **ICX version gate**: the ICF `@version` check no longer applies to `@kind icx` documents (their `@version` is the ICX spec version). `IcxGenerator.DEFAULT_ICX_VERSION` is `"1.2"`.
 
 ---
 
@@ -29,7 +42,7 @@ Zero-dependency **browser & Node** library (written in TypeScript) to parse, val
 
 ## Install
 
-Published on npm as [`icf.js`](https://www.npmjs.com/package/icf.js) (current version **1.1.0**).
+Published on npm as [`icf.js`](https://www.npmjs.com/package/icf.js) (current version **1.2.0**).
 
 ```bash
 npm install icf.js
@@ -426,7 +439,8 @@ Finds the schema node describing a master type — the writer's mirror of the pa
 | `generate(source, sourceFileName?): IcfDocument` | Structure only; empty positional/checksum fields. |
 | `generateWithChecksums(source, options?: IcxChecksumOptions): Promise<IcfDocument>` | Computes checksums (and positions when `sourceText` is supplied). |
 | `static INDEX_FIELDS` | `['RecordID','UUID','Line','Offset','Size','Checksum']`. |
-| `static SCHEMA_ATTRIBUTE` / `RECORD_TYPE_ATTRIBUTE` / `DEFAULT_ICX_VERSION` | `"schema"` / `"type"` / `"1.1"`. |
+| `static SCHEMA_ATTRIBUTE` / `RECORD_TYPE_ATTRIBUTE` / `DEFAULT_ICX_VERSION` | `"schema"` / `"type"` / `"1.2"`. |
+| `static TAGS_FIELD` / `SUMMARY_FIELD` / `SUMMARY_ATTRIBUTE` | `"Tags"` / `"Summary"` / `"summary"` (ICX v1.2). |
 
 All types (masters and record types alike) are emitted as top-level collections in a single anonymous schema. Record indexes are grouped by record type, chosen as: the `schema=` attribute, then `type=`, then the first data field name, then `"record"`. `@kind icx` and an explicit `@records` (master rows + source records) are set automatically. If the resolved `@hashmethod` is unregistered, computed fields are left empty (generation never throws).
 

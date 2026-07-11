@@ -20,7 +20,8 @@ import { IcfArray, IcfNode, IcfObject, IcfString, NULL } from '../model/node.js'
 import { Severity, ValidationMessage } from '../validation.js';
 import { ParseResult } from './result.js';
 import { splitAndUnescape, unescape } from './escaper.js';
-import { findPrimaryObject } from '../resolver.js';
+import { findPrimaryObject, REFERENCE_PATTERN } from '../resolver.js';
+import { hasUnescapedJoin, splitTags } from '../tags.js';
 
 enum Section {
   HEADER,
@@ -52,14 +53,10 @@ function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
-/**
- * A value shaped like a `Type:Id` reference (spec v1.1 §44): an identifier
- * (per the EBNF: letters, digits, `_`, `-`, `.`), a colon, then a
- * whitespace-free id. Cheap prefilter — the type must also be a declared
- * master type (or a record-local primary object) before the reference is
- * checked for resolution.
- */
-const REFERENCE_CANDIDATE = /^[A-Za-z_][A-Za-z0-9_.-]*:\S+$/;
+// Cheap reference prefilter (shared REFERENCE_PATTERN) — the type must also
+// be a declared master type (or a record-local primary object) before the
+// reference is checked for resolution.
+const REFERENCE_CANDIDATE = REFERENCE_PATTERN;
 
 /** Reserved directive names (spec v1.1 §9) — discouraged as object names. */
 const RESERVED_DIRECTIVE_NAMES = new Set([
@@ -383,6 +380,10 @@ export class IcfParser {
   }
 
   private checkVersion(value: string, lineNo: number): void {
+    // An ICX document's @version is the ICX spec version, not the ICF
+    // language version (ICX v1.2 §14) — the ICF gate does not apply.
+    // (@kind is the first line of an ICX file, so it is known by now.)
+    if (this.metadata.getKind() === 'icx') return;
     const m = /^(\d+)(?:\.(\d+))?/.exec(value.trim());
     if (!m) return;
     const major = Number.parseInt(m[1]!, 10);
@@ -1136,14 +1137,30 @@ export class IcfParser {
         );
         continue;
       }
-      if (!this.masters.hasType(type)) continue; // not a master reference
-      if (this.masters.resolveReference(value) === null) {
-        this.warn(
-          'UNRESOLVED_MASTER_REFERENCE',
-          `Reference "${value}" does not resolve to any "${type}" master record`,
-          line,
-        );
+      // whole value first — a master ID containing `+` still resolves whole
+      if (this.masters.hasType(type) && this.masters.resolveReference(value) !== null) continue;
+      // split fallback (ICX v1.2 §7): a joined tag cell is validated per tag
+      if (hasUnescapedJoin(value)) {
+        for (const part of splitTags(value)) {
+          if (!REFERENCE_CANDIDATE.test(part)) continue; // bare keyword tag
+          const partType = part.slice(0, part.indexOf(':'));
+          if (!this.masters.hasType(partType)) continue;
+          if (this.masters.resolveReference(part) === null) {
+            this.warn(
+              'UNRESOLVED_MASTER_REFERENCE',
+              `Reference "${part}" does not resolve to any "${partType}" master record`,
+              line,
+            );
+          }
+        }
+        continue;
       }
+      if (!this.masters.hasType(type)) continue; // not a master reference
+      this.warn(
+        'UNRESOLVED_MASTER_REFERENCE',
+        `Reference "${value}" does not resolve to any "${type}" master record`,
+        line,
+      );
     }
 
     this.validateConstraints();
