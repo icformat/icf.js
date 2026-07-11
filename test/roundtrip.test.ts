@@ -31,6 +31,17 @@ describe('round-trip fixtures', () => {
     roundTrips('multi_schema.icf');
   });
 
+  it('round-trips master-to-master (foreign-key) references', () => {
+    const doc = parse(fixture('master_reference.icf'));
+    // a master row may reference another master via the `Type:Id` syntax
+    const project = doc.getMasters().find('Project', 'P001');
+    expect(project?.get('VendorRef')?.asText()).toBe('Vendor:V001');
+    // and that reference resolves to the Vendor master record
+    const vendor = doc.getMasters().resolveReference(project!.get('VendorRef')!.asText());
+    expect(vendor?.get('Name')?.asText()).toBe('ABC Developers');
+    roundTrips('master_reference.icf');
+  });
+
   it('round-trips the full text-block fixture', () => {
     const doc = parse(fixture('textblock.icf'));
     const content = doc.getRecord(0)?.getData().path('OCRText').path('Content').asText();

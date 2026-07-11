@@ -162,6 +162,8 @@ export function toNode(value: IcfValue): IcfNode {
 /** An ordered map of named child nodes. */
 export class IcfObject extends IcfNode {
   private readonly map = new Map<string, IcfNode>();
+  /** `!annotation` entries attached to this row (spec v1.1 §46), lazily created. */
+  private rowAnnotationMap: Map<string, string[]> | null = null;
 
   override get type(): NodeType {
     return NodeType.OBJECT;
@@ -231,6 +233,37 @@ export class IcfObject extends IcfNode {
     const existing = this.map.get(name) ?? null;
     this.map.delete(name);
     return existing;
+  }
+
+  // ---- row annotations (spec v1.1 §46–§47) --------------------------------
+
+  hasRowAnnotations(): boolean {
+    return this.rowAnnotationMap !== null && this.rowAnnotationMap.size > 0;
+  }
+
+  /** Ordered `annotationName → entries` map (live view; created on demand). */
+  getRowAnnotations(): Map<string, string[]> {
+    if (this.rowAnnotationMap === null) this.rowAnnotationMap = new Map();
+    return this.rowAnnotationMap;
+  }
+
+  /** Appends entries to a row annotation (same name merges). */
+  addRowAnnotationEntries(name: string, entries: string[]): void {
+    const map = this.getRowAnnotations();
+    const existing = map.get(name);
+    if (existing) existing.push(...entries);
+    else map.set(name, [...entries]);
+  }
+
+  /** `!overrides` parsed as `field → value` from `k=v` entries (spec §47). */
+  getOverrides(): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const entry of this.rowAnnotationMap?.get('overrides') ?? []) {
+      const idx = entry.indexOf('=');
+      if (idx <= 0) continue; // malformed — reported by the parser, preserved raw
+      out.set(entry.slice(0, idx).trim(), entry.slice(idx + 1).trim());
+    }
+    return out;
   }
 }
 

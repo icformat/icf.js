@@ -105,7 +105,8 @@ export {
 export type { IcfValue, IcfJson } from './model/node.js';
 export { IcfMetadata } from './model/metadata.js';
 export { IcfMasters } from './model/masters.js';
-export { IcfSchema, IcfSchemas, SchemaNode } from './model/schema.js';
+export { IcfSchema, IcfSchemas, SchemaNode, STANDARD_SCHEMA_ANNOTATIONS } from './model/schema.js';
+export { resolveReference, resolveRecordData, findPrimaryObject } from './resolver.js';
 export { Severity, ValidationMessage, ValidationResult, IcfValidator } from './validation.js';
 export { IcfParser } from './parser/parser.js';
 export { ParseResult } from './parser/result.js';

@@ -51,6 +51,86 @@ describe('spec compliance', () => {
     expect(validate(bad).getErrors().some((m) => m.code === 'ROW_ON_CONTAINER')).toBe(true);
   });
 
+  it('accepts a master record that references another master (foreign key)', () => {
+    const icf = [
+      '@kind icf',
+      '@schema',
+      '',
+      'masters:',
+      '  Vendor[]:',
+      '    [VendorID, Name]',
+      '  Project[]:',
+      '    [ProjectID, Name, VendorRef]',
+      '',
+      '@masters',
+      '',
+      'Vendor:',
+      '  - V001, ABC Developers',
+      'Project:',
+      '  - P001, XYZ Project, Vendor:V001',
+      '',
+      '@data',
+      '',
+    ].join('\n');
+    const result = validate(icf);
+    // a resolvable master-to-master reference is clean — no unresolved warning
+    expect(result.getMessages().some((m) => m.code === 'UNRESOLVED_MASTER_REFERENCE')).toBe(false);
+    const vendor = parse(icf).getMasters().resolveReference('Vendor:V001');
+    expect(vendor?.get('Name')?.asText()).toBe('ABC Developers');
+  });
+
+  it('warns on a dangling master reference (in masters or data)', () => {
+    const icf = [
+      '@kind icf',
+      '@schema',
+      '',
+      'masters:',
+      '  Vendor[]:',
+      '    [VendorID, Name]',
+      '  Project[]:',
+      '    [ProjectID, Name, VendorRef]',
+      '',
+      '@masters',
+      '',
+      'Vendor:',
+      '  - V001, ABC Developers',
+      'Project:',
+      '  - P001, XYZ Project, Vendor:V999',
+      '',
+      '@data',
+      '',
+    ].join('\n');
+    const result = validate(icf);
+    const refWarn = result.getWarnings().find((m) => m.code === 'UNRESOLVED_MASTER_REFERENCE');
+    expect(refWarn).toBeDefined();
+    expect(refWarn!.message).toContain('Vendor:V999');
+    // it's a warning, not an error — the document still parses
+    expect(result.isValid()).toBe(true);
+  });
+
+  it('does not mistake plain colon-bearing values for master references', () => {
+    // `Email`/time-like values whose prefix is not a declared master type must
+    // not trigger UNRESOLVED_MASTER_REFERENCE.
+    const icf = [
+      '@kind icf',
+      '@schema',
+      '',
+      'Vendor:',
+      '  [VendorID, Email, Created]',
+      '',
+      '@data',
+      '',
+      '@record',
+      '',
+      'Vendor:',
+      '  = V1, vendor@example.com, http://x.test/a',
+      '',
+    ].join('\n');
+    expect(
+      validate(icf).getMessages().some((m) => m.code === 'UNRESOLVED_MASTER_REFERENCE'),
+    ).toBe(false);
+  });
+
   it('resolves master types nested under a grouping node', () => {
     const icf = [
       '@kind icf',

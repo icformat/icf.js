@@ -1,8 +1,8 @@
 # icf.js — Public API
 
-Zero-dependency **browser** library to parse, validate, build, write, and index **Indent Comma Format (ICF)** text, and generate **ICX** companion indexes. A faithful behavioral port of the Java library [`icfj`](https://github.com/icformat/icfj).
+Zero-dependency **browser & Node** library (written in TypeScript) to parse, validate, build, write, and index **Indent Comma Format (ICF)** text, and generate **ICX** companion indexes. A faithful behavioral port of the Java library [`icfj`](https://github.com/icformat/icfj). Implements **ICF specification v1.1**.
 
-- **Package:** `icf.js` (ESM + IIFE global `window.ICF`)
+- **Package:** `icf.js` (ESM + CommonJS + IIFE global `window.ICF`, with bundled TypeScript types)
 - **Runtime:** modern browsers / Node ≥ 20 (needs Web Crypto for `sha256`)
 - **Encoding:** UTF-8. A leading BOM is stripped on parse. Inputs and outputs are **strings** (no file/stream I/O).
 
@@ -10,19 +10,42 @@ Zero-dependency **browser** library to parse, validate, build, write, and index 
 
 ---
 
+## What's new in 1.1.0 (ICF spec v1.1)
+
+- **`@version 1.1`** accepted (1.2+ warns `HIGHER_MINOR_VERSION`, 2.x errors).
+- **Schema annotations** (`!indexes`, `!defaults`, `!constraints`, `!expressions`, plus namespaced `!com.example.*`) parsed, preserved, and round-tripped. Accessors on `SchemaNode`: `getAnnotations()`, `getIndexes()`, `getDefaults()`, `getConstraints()`, `getExpressions()`.
+- **Row annotations** (`!overrides` after a row) attached to the row's `IcfObject`: `getRowAnnotations()`, `getOverrides()`, `hasRowAnnotations()`.
+- **Primary objects**: `@record … primary=a,b` via `IcfRecord.getPrimary()`; reference resolution is **primary-first, then masters** (`IcfDocument.resolveReference(record, "Type:Id")`).
+- **Resolution API** (processing-model Phase 5): `IcfDocument.getResolvedRecordData(recordOrIndex)` returns a deep copy with `!defaults` filled and `!overrides` applied; the parsed model is never mutated. Standalone `resolveReference` / `resolveRecordData` / `findPrimaryObject` are also exported.
+- **Multiline value rows** (spec §59): rows ending with a trailing delimiter continue on following lines.
+- **Constraint validation**: `required` / `unique` produce warnings (`REQUIRED_FIELD_MISSING`, `UNIQUE_CONSTRAINT_VIOLATION`); unknown keywords warn `UNKNOWN_CONSTRAINT`. Never invalidates a document.
+- **New diagnostics** (all non-fatal unless noted): `RESERVED_OBJECT_NAME`, `UNKNOWN_ANNOTATION`, `ANNOTATION_WITHOUT_OWNER` (error), `ANNOTATION_AFTER_CHILDREN`, `MALFORMED_ANNOTATION_ENTRY`, `ROW_ANNOTATION_WITHOUT_ROW` (error), `PRIMARY_OBJECT_NOT_FOUND`, `UNRESOLVED_PRIMARY_REFERENCE`, `WRONG_ROW_MARKER`, `COMPACT_COLLECTION_SYNTAX`.
+- **Record attributes**: `IcfRecord.getChecksum()` and `getPrimary()` join the existing shorthand getters.
+- **Node support**: a CommonJS build (`dist/icf.cjs`) ships alongside ESM — `require('icf.js')` now works; no separate "icfts" package is needed.
+- **ICX v1.1**: ICX now follows ICF language policies (indentation + reserved names). The shared index structure is `recordindex[]` (`index[]` still read for ICX 1.0 compat, with a `RESERVED_OBJECT_NAME` warning); generated ICX declares `@version 1.1`. `@index` is surfaced via `IcfMetadata.getIndex()`.
+- **Non-goals in 1.1.0** (documented, spec-optional): expression *evaluation* and strict-validation mode.
+
+---
+
 ## Install
 
-Published on npm as [`icf.js`](https://www.npmjs.com/package/icf.js) (current version **1.0.0**).
+Published on npm as [`icf.js`](https://www.npmjs.com/package/icf.js) (current version **1.1.0**).
 
 ```bash
 npm install icf.js
 ```
 
 ```ts
+// Node or bundler — ESM
 import { parse, validate, write } from 'icf.js';
+
+// Node — CommonJS
+const { parse, validate, write } = require('icf.js');
 ```
 
-No build step required — use it straight from a CDN. Pin a major version (`@1`) for stability:
+Works in Node (≥ 20) and TypeScript projects out of the box — the package ships ESM (`dist/icf.js`), CommonJS (`dist/icf.cjs`) and bundled type declarations, so **no separate TypeScript/Node package is needed**.
+
+No build step required in the browser — use it straight from a CDN. Pin a major version (`@1`) for stability:
 
 ```html
 <!-- ES module via jsDelivr -->
@@ -160,6 +183,10 @@ Module-level singletons: `NULL` (an `IcfNull`), `MISSING` (an `IcfMissing`).
 | `putObject(name)` | the new `IcfObject` | Adds a fresh child and descends. |
 | `putArray(name)` | the new `IcfArray` | Adds a fresh child and descends. |
 | `remove(name)` | the removed `IcfNode` \| `null` | |
+| `hasRowAnnotations()` | `boolean` | True when the row carries `!annotations` (spec v1.1 §46). |
+| `getRowAnnotations()` | `Map<string, string[]>` | Ordered `name → entries` (live view; created on demand). |
+| `addRowAnnotationEntries(name, entries)` | `void` | Appends entries (same name merges). |
+| `getOverrides()` | `Map<string, string>` | `!overrides` parsed as `field → value` (spec v1.1 §47). |
 
 ---
 
@@ -188,11 +215,23 @@ Module-level singletons: `NULL` (an `IcfNull`), `MISSING` (an `IcfMissing`).
 | `getRecords(): IcfRecord[]` | |
 | `getRecordCount(): number` | |
 | `getRecord(index): IcfRecord \| null` | |
+| `resolveReference(record, "Type:Id"): IcfObject \| null` | v1.1 §45 order: the record's `primary=` objects first, then masters. `record` may be `null`. |
+| `getResolvedRecordData(recordOrIndex): IcfObject \| null` | Deep copy with `!defaults` filled and `!overrides` applied (Phase 5). Never mutates the parsed model. |
 | `toIcfNode(): IcfNode` | One record → its object; otherwise an array of records. |
 | `getRecordsAsArray(): IcfArray` | Always an array, regardless of record count. |
 | `toJsonString(): string` / `toPrettyString(): string` | JSON of the data. |
 
 Constructor: `new IcfDocument(metadata, schema | schemas, masters, records)` — accepts either a single `IcfSchema` (wrapped under the default id) or an `IcfSchemas`.
+
+### Standalone resolution helpers (v1.1)
+
+Also exported as module functions (the document methods above delegate to them):
+
+| Function | Description |
+|---|---|
+| `resolveReference(document, record \| null, "Type:Id")` | Primary-first, then masters (spec §45). |
+| `resolveRecordData(document, record): IcfObject` | Deep copy with `!defaults` + `!overrides` applied. |
+| `findPrimaryObject(recordData, name, id): IcfObject \| null` | Record-local lookup by the row's first field (the primary-key rule). |
 
 ---
 
@@ -203,8 +242,9 @@ Constructor: `new IcfDocument(metadata, schema | schemas, masters, records)` —
 | `getData(): IcfObject` | Record body as a native object. |
 | `getAttributes(): Map<string,string>` | Attributes from the `@record` line, in declaration order. |
 | `getAttribute(name): string \| null` | |
-| `getId()` / `getUuid()` / `getCreated()` / `getModified()` / `getRevision()` | Reserved-attribute shorthands (spec §11). |
+| `getId()` / `getUuid()` / `getCreated()` / `getModified()` / `getRevision()` / `getChecksum()` | Reserved-attribute shorthands (spec v1.1 §38). |
 | `getSchemaId(): string \| null` | The `schema=` attribute, or `null` (record uses the default schema). |
+| `getPrimary(): string[]` | Object names from the `primary=` attribute (spec v1.1 §39); `[]` when absent. |
 
 Constructor: `new IcfRecord(attributes: Map<string,string>, data: IcfObject)`. Attribute values may contain escaped whitespace (`note=South\ Zone` → `"South Zone"`).
 
@@ -224,8 +264,10 @@ Typed collection of reusable master rows (spec §13). The **first field is the p
 | `putType(typeName): IcfArray` | Returns the array, creating it if absent. |
 | `addEntry(typeName): IcfObject` | Appends a fresh empty entry, returns it. |
 | `find(typeName, primaryKey): IcfObject \| null` | Looks up by the value of the first field. |
-| `resolveReference(reference): IcfObject \| null` | Parses `"Type:Id"` and returns the entry. |
+| `resolveReference(reference): IcfObject \| null` | Parses `"Type:Id"` and returns the entry. Works for a reference held in a record field **or in another master's field** (master-to-master foreign keys, spec §13). |
 | `static MASTERS_NODE_NAME` | The reserved schema container name (`"masters"`). |
+
+A master row may reference another master via the standard `Type:Id` syntax in a field value (a foreign key), e.g. a `Project` row ending in `Vendor:V001`. References are stored as plain strings and resolved on demand with `resolveReference(...)`; validation reports a non-fatal `UNRESOLVED_MASTER_REFERENCE` when a `Type:Id` value whose `Type` is a declared master type does not resolve.
 
 ---
 
@@ -242,6 +284,13 @@ A schema node is a **container** (`getChildren()` non-empty → nested object), 
 | `getFields(): string[]` / `setFields(string[])` | Declared field names, in order. |
 | `getChildren(): Map<string, SchemaNode>` | Ordered. |
 | `getChild(name)` / `hasChild(name)` / `addChild(child)` | |
+| `hasAnnotations()` / `getAnnotations()` / `getAnnotation(name)` / `addAnnotationEntries(name, entries)` | Raw ordered `!annotation → entries` storage (spec v1.1 §25). |
+| `getIndexes(): string[]` | `!indexes` entries, e.g. `["empid", "department+empid"]`. |
+| `getDefaults(): Map<string,string>` | `!defaults` parsed from `k=v` entries. |
+| `getConstraints(): Map<string,string[]>` | `!constraints` parsed from `field:keyword` entries. |
+| `getExpressions(): Map<string,string>` | `!expressions` parsed from `k=expr` entries (never evaluated by the library). |
+
+`STANDARD_SCHEMA_ANNOTATIONS` (exported constant) lists the four standard names: `indexes`, `defaults`, `constraints`, `expressions`. Namespaced annotations (`!com.example.x`) are preserved verbatim.
 
 ### `IcfSchema`
 | Member | Description |
@@ -310,7 +359,27 @@ Enum: `ERROR`, `WARNING`.
 `validate(text): ValidationResult` (the class behind the `validate` facade).
 
 #### Common diagnostic codes
-`NO_SCHEMA`, `EMPTY_SCHEMA`, `STRAY_LINE`, `TAB_INDENT`, `UNEXPECTED_SCHEMA_LINE`, `FIELD_LIST_WITHOUT_OWNER`, `DUPLICATE_FIELD_LIST`, `DUPLICATE_NODE`, `EMPTY_NODE_NAME`, `UNCLOSED_FIELD_LIST`, `UNEXPECTED_DATA_LINE`, `ROW_WITHOUT_OWNER`, `ROW_ON_CONTAINER`, `CHILD_IN_COLLECTION`, `UNKNOWN_NODE`, `MULTIPLE_ROWS_FOR_OBJECT`, `FIELD_COUNT_MISMATCH`, `IMPLICIT_RECORD`, `ATTRIBUTE_WITHOUT_VALUE`, `MASTERS_BEFORE_SCHEMA`, `UNKNOWN_MASTER_TYPE`, `ROW_WITHOUT_MASTER_TYPE`, `UNEXPECTED_MASTERS_LINE`, `UNEXPECTED_METADATA_LINE`, `EMPTY_METADATA_KEY`, `DUPLICATE_SCHEMA_ID`, `UNKNOWN_SCHEMA_ID`, `UNCLOSED_TEXT_BLOCK`, `TEXT_BLOCK_WITHOUT_OWNER`, `UNSUPPORTED_MAJOR_VERSION`, `HIGHER_MINOR_VERSION`.
+`NO_SCHEMA`, `EMPTY_SCHEMA`, `STRAY_LINE`, `TAB_INDENT`, `UNEXPECTED_SCHEMA_LINE`, `FIELD_LIST_WITHOUT_OWNER`, `DUPLICATE_FIELD_LIST`, `DUPLICATE_NODE`, `EMPTY_NODE_NAME`, `UNCLOSED_FIELD_LIST`, `UNEXPECTED_DATA_LINE`, `ROW_WITHOUT_OWNER`, `ROW_ON_CONTAINER`, `CHILD_IN_COLLECTION`, `UNKNOWN_NODE`, `MULTIPLE_ROWS_FOR_OBJECT`, `FIELD_COUNT_MISMATCH`, `IMPLICIT_RECORD`, `ATTRIBUTE_WITHOUT_VALUE`, `MASTERS_BEFORE_SCHEMA`, `UNKNOWN_MASTER_TYPE`, `ROW_WITHOUT_MASTER_TYPE`, `UNEXPECTED_MASTERS_LINE`, `UNEXPECTED_METADATA_LINE`, `EMPTY_METADATA_KEY`, `DUPLICATE_SCHEMA_ID`, `UNKNOWN_SCHEMA_ID`, `UNCLOSED_TEXT_BLOCK`, `TEXT_BLOCK_WITHOUT_OWNER`, `UNSUPPORTED_MAJOR_VERSION`, `HIGHER_MINOR_VERSION`, `UNRESOLVED_MASTER_REFERENCE`.
+
+`UNRESOLVED_MASTER_REFERENCE` (WARNING) is emitted when a row value of the form `Type:Id` — in a record **or** in a master row (a master-to-master foreign key, spec §13) — names a declared master `Type` but no matching record exists. Values whose prefix is not a declared master type (URLs, emails, timestamps) are never flagged. Inside a record, a `Type` named by the record's `primary=` attribute resolves record-locally first (spec v1.1 §45) and suppresses the master warning.
+
+#### v1.1 diagnostic codes
+
+| Code | Severity | Trigger |
+|---|---|---|
+| `RESERVED_OBJECT_NAME` | WARNING | Schema object named like a reserved directive (all document kinds — ICF §9, ICX §4; legacy ICX `index[]` warns). |
+| `UNKNOWN_ANNOTATION` | WARNING | Non-namespaced, non-standard `!annotation` name. |
+| `ANNOTATION_WITHOUT_OWNER` | ERROR | `!x:` in `@schema` with no enclosing object. |
+| `ANNOTATION_AFTER_CHILDREN` | WARNING | Annotation after child objects (§22 ordering). |
+| `MALFORMED_ANNOTATION_ENTRY` | WARNING | Standard-annotation entry missing its `=` / `:` shape. |
+| `ROW_ANNOTATION_WITHOUT_ROW` | ERROR | `!x:` in data/masters with no preceding row. |
+| `PRIMARY_OBJECT_NOT_FOUND` | WARNING | `primary=` names an object absent from the record. |
+| `UNRESOLVED_PRIMARY_REFERENCE` | WARNING | Primary-typed reference that doesn't resolve. |
+| `REQUIRED_FIELD_MISSING` | WARNING | `required` constraint violated. |
+| `UNIQUE_CONSTRAINT_VIOLATION` | WARNING | `unique` constraint violated (2nd+ occurrence). |
+| `UNKNOWN_CONSTRAINT` | WARNING | Constraint keyword other than `required`/`unique`. |
+| `WRONG_ROW_MARKER` | WARNING | `-` on a singleton / `=` on a collection row (§41–§42). |
+| `COMPACT_COLLECTION_SYNTAX` | WARNING | Compact object syntax on a collection (§43). |
 
 ---
 
@@ -357,7 +426,7 @@ Finds the schema node describing a master type — the writer's mirror of the pa
 | `generate(source, sourceFileName?): IcfDocument` | Structure only; empty positional/checksum fields. |
 | `generateWithChecksums(source, options?: IcxChecksumOptions): Promise<IcfDocument>` | Computes checksums (and positions when `sourceText` is supplied). |
 | `static INDEX_FIELDS` | `['RecordID','UUID','Line','Offset','Size','Checksum']`. |
-| `static SCHEMA_ATTRIBUTE` / `RECORD_TYPE_ATTRIBUTE` / `DEFAULT_ICX_VERSION` | `"schema"` / `"type"` / `"1.0"`. |
+| `static SCHEMA_ATTRIBUTE` / `RECORD_TYPE_ATTRIBUTE` / `DEFAULT_ICX_VERSION` | `"schema"` / `"type"` / `"1.1"`. |
 
 All types (masters and record types alike) are emitted as top-level collections in a single anonymous schema. Record indexes are grouped by record type, chosen as: the `schema=` attribute, then `type=`, then the first data field name, then `"record"`. `@kind icx` and an explicit `@records` (master rows + source records) are set automatically. If the resolved `@hashmethod` is unregistered, computed fields are left empty (generation never throws).
 
@@ -434,7 +503,7 @@ All extend the native `Error`.
 - **`@metadata` section** (spec §5) — appears before the first `@schema`; arbitrary `key: value` entries (colon syntax). Accessed via `IcfMetadata.userMetadataAsMap()`.
 - **Multiple schemas** (spec §7) — records pick one via `@record schema=...`; records without it use the default schema.
 - **Preformatted text blocks** (spec §18) — `<<TAG` opens a verbatim region ending at `TAG>>` at the same indent. Reserved characters carry no meaning inside. The block fills a leaf's only field; the parser strips the opening tag's indentation, the writer re-applies it.
-- **Master data** (spec §13) — `Type:Id` references stay as plain strings; `IcfMasters.resolveReference(...)` resolves them on demand. Three schema styles all work: the legacy `masters:` container, top-level collections, and **nested master tables** (a type declared under any grouping/wrapper node, e.g. `masterindextables:` → `m0000002:`); the parser/writer resolve a master type to the first schema descendant of that name.
+- **Master data** (spec §13) — `Type:Id` references stay as plain strings; `IcfMasters.resolveReference(...)` resolves them on demand, whether the reference sits in a record field or in **another master's field** (master-to-master foreign keys). Unresolvable references to a declared master type surface as a non-fatal `UNRESOLVED_MASTER_REFERENCE` warning. Three schema styles all work: the legacy `masters:` container, top-level collections, and **nested master tables** (a type declared under any grouping/wrapper node, e.g. `masterindextables:` → `m0000002:`); the parser/writer resolve a master type to the first schema descendant of that name.
 - **Row markers** (spec §9/§12) — `=` for single-row objects, `-` for collection rows; the writer picks by `SchemaNode.isCollection()`.
 - **Compact Object Syntax** (spec §12) — `Vendor:VEN001, ABC, City` ≡ `Vendor:` + `= VEN001, ABC, City`. No whitespace before the colon; the name part contains no whitespace.
 - **UTF-8 BOM** (spec §24) — a leading U+FEFF is silently stripped on parse.

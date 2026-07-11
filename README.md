@@ -1,15 +1,16 @@
 # icf.js
 
-A small, **zero-dependency browser library** to parse, validate, build, write, and index **Indent Comma Format (ICF)** text, and to generate **ICX** companion indexes.
+A small, **zero-dependency browser & Node library** (written in TypeScript) to parse, validate, build, write, and index **Indent Comma Format (ICF)** text, and to generate **ICX** companion indexes.
 
-`icf.js` is a faithful behavioral port of the Java library [`icfj`](https://github.com/icformat/icfj), adapted for the browser: inputs and outputs are plain **strings** (no file or stream I/O), and checksums are **async** (Web Crypto). It ships as ESM with bundled type declarations and as a standalone IIFE global.
+`icf.js` is a faithful behavioral port of the Java library [`icfj`](https://github.com/icformat/icfj): inputs and outputs are plain **strings** (no file or stream I/O), and checksums are **async** (Web Crypto). It ships as ESM + CommonJS with bundled type declarations, plus a standalone IIFE global for `<script>` use — the same package serves browsers, Node and TypeScript projects.
 
 - 📦 Zero runtime dependencies
 - 🌳 JSON-tree-style data model with safe `path(...)` navigation
 - 🧱 Schema-driven parse / write with full round-trip fidelity
+- 📝 ICF **v1.1**: schema annotations (`!indexes` `!defaults` `!constraints` `!expressions`), row `!overrides`, primary objects, primary-first reference resolution, multiline rows
 - 🔐 Self-describing checksums (`sha256`, `crc32` built in; pluggable registry)
 - 🗂️ ICX index generation as a normal ICF document
-- 📜 ICF v1 + ICX v1 — see the [specifications](https://icformat.org)
+- 📜 ICF v1.1 + ICX v1 — see the [specifications](https://icformat.org)
 
 > ICF combines the compactness of CSV, the readability of YAML, and the hierarchy of JSON — by declaring a schema once and storing records positionally. It is well suited to OCR pipelines, invoice/ERP interchange, document archives, and AI/RAG datasets.
 
@@ -21,10 +22,16 @@ A small, **zero-dependency browser library** to parse, validate, build, write, a
 npm install icf.js
 ```
 
-### ESM (bundler or `<script type="module">`)
+### ESM (Node, bundler or `<script type="module">`)
 
 ```js
 import { parse, write, writeWithChecksum, generateIcx } from 'icf.js';
+```
+
+### CommonJS (Node `require`)
+
+```js
+const { parse, write, writeWithChecksum, generateIcx } = require('icf.js');
 
 const doc = parse(icfText);
 console.log(doc.toPrettyString());
@@ -33,14 +40,14 @@ console.log(doc.toPrettyString());
 ### Plain `<script>` via jsDelivr (IIFE global `window.ICF`)
 
 ```html
-<script src="https://cdn.jsdelivr.net/gh/icformat/icf.js@v1/dist/icf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/icf.js@1"></script>
 <script>
   const doc = ICF.parse(text);
   console.log(doc.toJsonString());
 </script>
 ```
 
-The package also exposes `unpkg` / `jsdelivr` fields, so `https://cdn.jsdelivr.net/npm/icf.js` resolves to the minified global.
+The package exposes `unpkg` / `jsdelivr` fields, so `https://cdn.jsdelivr.net/npm/icf.js@1` (or `https://unpkg.com/icf.js@1`) resolves to the minified global build. Drop the `@1` to always track the latest release.
 
 ---
 

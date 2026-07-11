@@ -20,6 +20,7 @@ import { IcfArray, IcfNode, IcfObject, IcfString, NULL } from '../model/node.js'
 import { Severity, ValidationMessage } from '../validation.js';
 import { ParseResult } from './result.js';
 import { splitAndUnescape, unescape } from './escaper.js';
+import { findPrimaryObject } from '../resolver.js';
 
 enum Section {
   HEADER,
@@ -51,17 +52,74 @@ function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
+/**
+ * A value shaped like a `Type:Id` reference (spec v1.1 §44): an identifier
+ * (per the EBNF: letters, digits, `_`, `-`, `.`), a colon, then a
+ * whitespace-free id. Cheap prefilter — the type must also be a declared
+ * master type (or a record-local primary object) before the reference is
+ * checked for resolution.
+ */
+const REFERENCE_CANDIDATE = /^[A-Za-z_][A-Za-z0-9_.-]*:\S+$/;
+
+/** Reserved directive names (spec v1.1 §9) — discouraged as object names. */
+const RESERVED_DIRECTIVE_NAMES = new Set([
+  'kind', 'version', 'encoding', 'delimiter', 'escape',
+  'namespace', 'vendor', 'generator',
+  'created', 'modified', 'revision',
+  'hashmethod', 'checksum', 'index',
+  'metadata', 'schema', 'masters', 'data', 'record',
+]);
+
+/** Standard schema-annotation names (spec v1.1 §26). */
+const STANDARD_SCHEMA_ANNOTATION_NAMES = new Set(['indexes', 'defaults', 'constraints', 'expressions']);
+
+/** Standard row-annotation names (spec v1.1 §46). */
+const STANDARD_ROW_ANNOTATION_NAMES = new Set(['overrides']);
+
+/** A row whose text ended with a trailing delimiter, awaiting continuation. */
+interface PendingRow {
+  text: string;
+  line: number;
+  /** Indent of the line that started the row — continuation must be deeper (§59). */
+  indent: number;
+  commit: (text: string, line: number) => void;
+}
+
+/** An open `!annotation:` in the schema section, awaiting entry rows. */
+interface SchemaAnnotationContext {
+  owner: SchemaNode;
+  name: string;
+  indent: number;
+}
+
+/** An open `!annotation:` after a data/masters row, awaiting entry rows. */
+interface RowAnnotationContext {
+  target: IcfObject;
+  name: string;
+  indent: number;
+}
+
 export class IcfParser {
   /** Highest ICF major version this parser implements. */
   static readonly SUPPORTED_MAJOR_VERSION = 1;
   /** Highest ICF minor version this parser implements. */
-  static readonly SUPPORTED_MINOR_VERSION = 0;
+  static readonly SUPPORTED_MINOR_VERSION = 1;
 
   private readonly messages: ValidationMessage[] = [];
   private metadata!: IcfMetadata;
   private schemas!: IcfSchemas;
   private masters!: IcfMasters;
   private records!: IcfRecord[];
+  /** Line number of each record's `@record` directive (parallel to records). */
+  private recordLines: number[] = [];
+
+  // `Type:Id` values seen in any row (masters + data), resolved against the
+  // fully-built masters in finalValidation (masters always parse before data).
+  // `record` is the containing record for @data rows (primary-first, §45).
+  private readonly refChecks: { line: number; value: string; record: IcfRecord | null }[] = [];
+
+  // every row bound to a schema node, for `!constraints` validation (v1.1 §29)
+  private readonly rowsByNode = new Map<SchemaNode, { obj: IcfObject; line: number }[]>();
 
   private section = Section.HEADER;
 
@@ -75,6 +133,12 @@ export class IcfParser {
   // data parsing state
   private dataStack: DataFrame[] = [];
   private hasRecord = false;
+
+  // v1.1 state: multiline row continuation + open annotations + last row
+  private pendingRow: PendingRow | null = null;
+  private schemaAnnotation: SchemaAnnotationContext | null = null;
+  private rowAnnotation: RowAnnotationContext | null = null;
+  private lastRowObject: IcfObject | null = null;
 
   // text-block state (checked at the very top of the loop)
   private inTextBlock = false;
@@ -99,9 +163,26 @@ export class IcfParser {
       }
 
       const trimmed = raw.trim();
-      if (trimmed === '') continue; // empty lines ignored outside text blocks
+      if (trimmed === '') continue; // empty lines ignored outside text blocks (pending rows persist)
 
       const { indent, hadTab } = this.indentOf(raw);
+
+      // 1b) multiline row continuation (spec v1.1 §59): a row ending with a
+      // trailing unescaped delimiter consumes subsequent *bare-value* lines
+      // indented deeper than the row's start ("aligned beneath the first
+      // value"). Structural lines (directives, row markers, annotations,
+      // field lists, text blocks, declarations ending in ':') or a
+      // same/shallower-indented line terminate the pending row instead —
+      // otherwise a legitimate row whose last cell is empty (e.g. ICX rows
+      // with empty positional fields) would swallow the next line.
+      if (this.pendingRow !== null) {
+        if (indent > this.pendingRow.indent && !this.isRowTerminator(trimmed)) {
+          this.pendingRow.text = `${this.pendingRow.text.trimEnd()} ${trimmed}`;
+          if (!this.endsWithOpenDelimiter(this.pendingRow.text)) this.flushPendingRow();
+          continue;
+        }
+        this.flushPendingRow(); // fall through to the structural line
+      }
       if (hadTab) {
         this.warn('TAB_INDENT', 'Tab used for indentation; 2 spaces recommended', lineNo);
       }
@@ -130,6 +211,8 @@ export class IcfParser {
           this.warn('STRAY_LINE', `Unexpected line before any section: "${trimmed}"`, lineNo);
       }
     }
+
+    this.flushPendingRow(); // a row may still be pending at EOF
 
     if (this.inTextBlock) {
       // close gracefully at EOF
@@ -160,6 +243,62 @@ export class IcfParser {
     this.inTextBlock = false;
     this.textBlockOwner = null;
     this.textBlockBuffer = [];
+    this.refChecks.length = 0;
+    this.recordLines = [];
+    this.rowsByNode.clear();
+    this.pendingRow = null;
+    this.schemaAnnotation = null;
+    this.rowAnnotation = null;
+    this.lastRowObject = null;
+  }
+
+  // ---- multiline rows (spec v1.1 §59) ------------------------------------
+
+  /** True when `s` (ignoring trailing whitespace) ends with an unescaped delimiter. */
+  private endsWithOpenDelimiter(s: string): boolean {
+    const t = s.trimEnd();
+    if (t === '' || t[t.length - 1] !== this.delimiter) return false;
+    let escapes = 0;
+    for (let i = t.length - 2; i >= 0 && t[i] === this.escape; i--) escapes++;
+    return escapes % 2 === 0;
+  }
+
+  /**
+   * True when `trimmed` is a structural line that ends a pending row rather
+   * than continuing it: a directive, row marker, annotation, field list,
+   * text-block opener, or a declaration line ending in `:`. Bare value
+   * segments (e.g. `Anand,` or `Vendor:VEN001`) are continuation.
+   */
+  private isRowTerminator(trimmed: string): boolean {
+    const first = trimmed[0]!;
+    if (first === '@' || first === '=' || first === '-' || first === '!' || first === '[') return true;
+    if (trimmed.startsWith('<<')) return true;
+    if (!trimmed.endsWith(':')) return false;
+    // only an *unescaped* trailing colon is a declaration opener
+    let escapes = 0;
+    for (let i = trimmed.length - 2; i >= 0 && trimmed[i] === this.escape; i--) escapes++;
+    return escapes % 2 === 0;
+  }
+
+  /** Commits `text` now, or parks it as a pending row awaiting continuation. */
+  private submitRow(
+    text: string,
+    line: number,
+    indent: number,
+    commit: (text: string, line: number) => void,
+  ): void {
+    if (this.endsWithOpenDelimiter(text)) {
+      this.pendingRow = { text, line, indent, commit };
+    } else {
+      commit(text, line);
+    }
+  }
+
+  private flushPendingRow(): void {
+    if (this.pendingRow === null) return;
+    const pending = this.pendingRow;
+    this.pendingRow = null;
+    pending.commit(pending.text, pending.line);
   }
 
   private get delimiter(): string {
@@ -209,6 +348,11 @@ export class IcfParser {
   // ---- directives -------------------------------------------------------
 
   private handleDirective(trimmed: string, lineNo: number): void {
+    // a directive closes any open annotation / row-binding context
+    this.schemaAnnotation = null;
+    this.rowAnnotation = null;
+    this.lastRowObject = null;
+
     const rest = trimmed.slice(1);
     const spaceIdx = rest.search(/\s/);
     const name = (spaceIdx < 0 ? rest : rest.slice(0, spaceIdx)).trim();
@@ -306,6 +450,27 @@ export class IcfParser {
   private handleSchemaLine(trimmed: string, indent: number, lineNo: number): void {
     if (!this.currentSchema) return;
 
+    // v1.1 §25: `!annotation:` lines and their `=` entry rows
+    if (trimmed.startsWith('!')) {
+      this.handleSchemaAnnotation(trimmed, indent, lineNo);
+      return;
+    }
+    if (trimmed.startsWith('=') || trimmed.startsWith('-')) {
+      const ann = this.schemaAnnotation;
+      if (ann && indent > ann.indent) {
+        this.submitRow(trimmed.slice(1).trim(), lineNo, indent, (text, line) => {
+          const entries = splitAndUnescape(text, this.delimiter, this.escape);
+          this.checkAnnotationEntries(ann.name, entries, line);
+          ann.owner.addAnnotationEntries(ann.name, entries);
+        });
+        return;
+      }
+      this.schemaAnnotation = null;
+      this.warn('UNEXPECTED_SCHEMA_LINE', `Not a schema declaration: "${trimmed}"`, lineNo);
+      return;
+    }
+    this.schemaAnnotation = null;
+
     if (trimmed.startsWith('[')) {
       const close = trimmed.lastIndexOf(']');
       if (close < 0) {
@@ -343,6 +508,15 @@ export class IcfParser {
       this.error('EMPTY_NODE_NAME', 'Schema node has an empty name', lineNo);
       return;
     }
+    // ICX 1.1 §4 aligns ICX with this rule, so it applies to every document
+    // kind — legacy ICX 1.0 files using `index[]` get this (non-fatal) warning.
+    if (RESERVED_DIRECTIVE_NAMES.has(name)) {
+      this.warn(
+        'RESERVED_OBJECT_NAME',
+        `Object name "${name}" is a reserved directive name; avoid it in ICF 1.1+ documents`,
+        lineNo,
+      );
+    }
     this.popSchema(indent);
     const parent = this.schemaStack[this.schemaStack.length - 1]!.node;
     if (parent.hasChild(name)) {
@@ -353,12 +527,117 @@ export class IcfParser {
     this.schemaStack.push({ node, indent });
   }
 
-  // ---- shared-index fallback (ICX §5) -----------------------------------
+  // ---- annotations (spec v1.1 §25–§31, §46–§47) ---------------------------
+
+  /** Splits `!name: [inline entries]`; returns `null` (and warns) when malformed. */
+  private parseAnnotationHead(
+    trimmed: string,
+    lineNo: number,
+    sectionCode: string,
+  ): { name: string; after: string } | null {
+    const colon = this.firstUnescapedColon(trimmed);
+    if (colon < 0) {
+      this.warn(sectionCode, `Annotation line has no colon: "${trimmed}"`, lineNo);
+      return null;
+    }
+    const name = unescape(trimmed.slice(1, colon).trim(), this.escape);
+    if (name === '') {
+      this.warn(sectionCode, `Annotation has an empty name: "${trimmed}"`, lineNo);
+      return null;
+    }
+    return { name, after: trimmed.slice(colon + 1).trim() };
+  }
+
+  private handleSchemaAnnotation(trimmed: string, indent: number, lineNo: number): void {
+    const head = this.parseAnnotationHead(trimmed, lineNo, 'UNEXPECTED_SCHEMA_LINE');
+    if (!head || !this.currentSchema) return;
+    const { name, after } = head;
+
+    this.popSchema(indent);
+    let owner = this.schemaStack[this.schemaStack.length - 1]!.node;
+    if (owner === this.currentSchema.getRoot()) {
+      this.error('ANNOTATION_WITHOUT_OWNER', `Annotation !${name} has no owning object`, lineNo);
+      // route the entry rows to a discarded sink so they don't cascade
+      owner = new SchemaNode('(orphan)');
+      this.schemaAnnotation = { owner, name, indent };
+      return;
+    }
+    if (!STANDARD_SCHEMA_ANNOTATION_NAMES.has(name) && !name.includes('.')) {
+      this.warn('UNKNOWN_ANNOTATION', `Unknown annotation !${name} (not standard, not namespaced)`, lineNo);
+    }
+    if (owner.getChildren().size > 0) {
+      this.warn(
+        'ANNOTATION_AFTER_CHILDREN',
+        `Annotation !${name} appears after child objects of "${owner.name}" (field definition, annotations, then children — spec §22)`,
+        lineNo,
+      );
+    }
+    const context: SchemaAnnotationContext = { owner, name, indent };
+    this.schemaAnnotation = context;
+    if (after !== '') {
+      // compact form: !name: entry, entry
+      this.submitRow(after, lineNo, indent, (text, line) => {
+        const entries = splitAndUnescape(text, this.delimiter, this.escape);
+        this.checkAnnotationEntries(context.name, entries, line);
+        context.owner.addAnnotationEntries(context.name, entries);
+      });
+    }
+  }
+
+  private handleRowAnnotation(trimmed: string, indent: number, lineNo: number): void {
+    const sectionCode = this.section === Section.MASTERS ? 'UNEXPECTED_MASTERS_LINE' : 'UNEXPECTED_DATA_LINE';
+    const head = this.parseAnnotationHead(trimmed, lineNo, sectionCode);
+    if (!head) return;
+    const { name, after } = head;
+
+    if (this.lastRowObject === null) {
+      this.error('ROW_ANNOTATION_WITHOUT_ROW', `Row annotation !${name} has no preceding row`, lineNo);
+      // route the entry rows to a discarded sink so they don't cascade
+      this.rowAnnotation = { target: new IcfObject(), name, indent };
+      return;
+    }
+    if (!STANDARD_ROW_ANNOTATION_NAMES.has(name) && !name.includes('.')) {
+      this.warn('UNKNOWN_ANNOTATION', `Unknown annotation !${name} (not standard, not namespaced)`, lineNo);
+    }
+    const context: RowAnnotationContext = { target: this.lastRowObject, name, indent };
+    this.rowAnnotation = context;
+    if (after !== '') {
+      // compact form: !name: entry, entry
+      this.submitRow(after, lineNo, indent, (text, line) => {
+        const entries = splitAndUnescape(text, this.delimiter, this.escape);
+        this.checkAnnotationEntries(context.name, entries, line);
+        context.target.addRowAnnotationEntries(context.name, entries);
+      });
+    }
+  }
+
+  /** Warns on standard-annotation entries missing their `=` / `:` shape. */
+  private checkAnnotationEntries(name: string, entries: string[], lineNo: number): void {
+    const needsAssignment = name === 'defaults' || name === 'expressions' || name === 'overrides';
+    const needsColon = name === 'constraints';
+    if (!needsAssignment && !needsColon) return;
+    for (const entry of entries) {
+      const idx = needsColon ? entry.indexOf(':') : entry.indexOf('=');
+      if (idx <= 0) {
+        this.warn(
+          'MALFORMED_ANNOTATION_ENTRY',
+          `Entry "${entry}" of !${name} is not "${needsColon ? 'field:keyword' : 'key=value'}"`,
+          lineNo,
+        );
+      }
+    }
+  }
+
+  // ---- shared-index fallback (ICX v1.1 §6) --------------------------------
 
   private findSharedIndexFields(): string[] | null {
-    for (const schema of this.schemas.asMap().values()) {
-      const index = schema.getTopLevelNode('index');
-      if (index) return index.getFields();
+    // `recordindex[]` is the ICX 1.1 shared structure; `index[]` is the
+    // legacy ICX 1.0 name (reserved since ICF 1.1), still accepted on read.
+    for (const name of ['recordindex', 'index']) {
+      for (const schema of this.schemas.asMap().values()) {
+        const node = schema.getTopLevelNode(name);
+        if (node) return node.getFields();
+      }
     }
     return null;
   }
@@ -406,20 +685,43 @@ export class IcfParser {
     return null;
   }
 
-  private handleMastersLine(trimmed: string, _indent: number, lineNo: number): void {
+  private handleMastersLine(trimmed: string, indent: number, lineNo: number): void {
+    if (trimmed.startsWith('!')) {
+      this.handleRowAnnotation(trimmed, indent, lineNo);
+      return;
+    }
     if (trimmed.startsWith('=') || trimmed.startsWith('-')) {
+      const ann = this.rowAnnotation;
+      if (ann && indent > ann.indent) {
+        // entry row of an open `!annotation:` on the previous master row
+        this.submitRow(trimmed.slice(1).trim(), lineNo, indent, (text, line) => {
+          const entries = splitAndUnescape(text, this.delimiter, this.escape);
+          this.checkAnnotationEntries(ann.name, entries, line);
+          ann.target.addRowAnnotationEntries(ann.name, entries);
+        });
+        return;
+      }
+      this.rowAnnotation = null;
       if (this.currentMasterType === null) {
         this.error('ROW_WITHOUT_MASTER_TYPE', 'Master row appears before any type declaration', lineNo);
         return;
       }
-      const rest = trimmed.slice(1);
-      const schema = this.masterTypeSchema(this.currentMasterType);
-      const fields = schema ? schema.getFields() : [];
-      const values = splitAndUnescape(rest, this.delimiter, this.escape);
-      const obj = this.buildObject(fields, values, lineNo);
-      this.masters.putType(this.currentMasterType).add(obj);
+      const typeName = this.currentMasterType;
+      const schema = this.masterTypeSchema(typeName);
+      if (schema) {
+        const marker = trimmed[0]!;
+        if (schema.isCollection() && marker === '=') {
+          this.warn('WRONG_ROW_MARKER', `Collection "${typeName}" rows should use "-" (spec §42)`, lineNo);
+        } else if (!schema.isCollection() && marker === '-') {
+          this.warn('WRONG_ROW_MARKER', `Singleton "${typeName}" rows should use "=" (spec §41)`, lineNo);
+        }
+      }
+      this.submitRow(trimmed.slice(1), lineNo, indent, (text, line) => {
+        this.addMasterRow(typeName, schema, text, line);
+      });
       return;
     }
+    this.rowAnnotation = null;
 
     const colon = this.firstUnescapedColon(trimmed);
     if (colon < 0) {
@@ -440,21 +742,37 @@ export class IcfParser {
 
     if (after !== '') {
       // compact master row: Type:val, val, ...
-      const fields = schema ? schema.getFields() : [];
-      const values = splitAndUnescape(after, this.delimiter, this.escape);
-      this.masters.putType(name).add(this.buildObject(fields, values, lineNo));
+      if (schema?.isCollection()) {
+        this.warn(
+          'COMPACT_COLLECTION_SYNTAX',
+          `Compact object syntax on collection "${name}" (spec §43: singletons only)`,
+          lineNo,
+        );
+      }
+      this.submitRow(after, lineNo, indent, (text, line) => {
+        this.addMasterRow(name, schema, text, line);
+      });
     }
+  }
+
+  private addMasterRow(typeName: string, schema: SchemaNode | null, text: string, line: number): void {
+    const fields = schema ? schema.getFields() : [];
+    const values = splitAndUnescape(text, this.delimiter, this.escape);
+    const obj = this.buildObject(fields, values, line);
+    this.masters.putType(typeName).add(obj);
+    this.lastRowObject = obj;
+    this.registerRow(schema, obj, line);
   }
 
   // ---- data section -----------------------------------------------------
 
-  private startRecord(attrStr: string, _lineNo: number): void {
+  private startRecord(attrStr: string, lineNo: number): void {
     this.section = Section.DATA;
     const attributes = this.parseAttributes(attrStr);
     const schemaId = attributes.get('schema') ?? null;
     let schema = this.schemas.get(schemaId);
     if (schemaId !== null && !this.schemas.has(schemaId)) {
-      this.warn('UNKNOWN_SCHEMA_ID', `Record references unknown schema id "${schemaId}"`, _lineNo);
+      this.warn('UNKNOWN_SCHEMA_ID', `Record references unknown schema id "${schemaId}"`, lineNo);
       schema = this.schemas.getDefault();
     }
     if (!schema) schema = this.schemas.getDefault();
@@ -462,7 +780,10 @@ export class IcfParser {
 
     const data = new IcfObject();
     this.records.push(new IcfRecord(attributes, data));
+    this.recordLines.push(lineNo);
     this.hasRecord = true;
+    this.lastRowObject = null;
+    this.rowAnnotation = null;
     this.dataStack = [{ kind: 'container', node: data, schemaNode: recordSchema.getRoot(), indent: -1 }];
   }
 
@@ -481,14 +802,31 @@ export class IcfParser {
   private handleDataLine(raw: string, trimmed: string, indent: number, lineNo: number): void {
     this.ensureRecord(lineNo);
 
+    if (trimmed.startsWith('!')) {
+      this.handleRowAnnotation(trimmed, indent, lineNo);
+      return;
+    }
     if (trimmed.startsWith('<<')) {
+      this.rowAnnotation = null;
       this.openTextBlock(trimmed, indent, lineNo);
       return;
     }
     if (trimmed.startsWith('=') || trimmed.startsWith('-')) {
-      this.handleRow(trimmed.slice(1), indent, lineNo);
+      const ann = this.rowAnnotation;
+      if (ann && indent > ann.indent) {
+        // entry row of an open `!annotation:` on the previous data row
+        this.submitRow(trimmed.slice(1).trim(), lineNo, indent, (text, line) => {
+          const entries = splitAndUnescape(text, this.delimiter, this.escape);
+          this.checkAnnotationEntries(ann.name, entries, line);
+          ann.target.addRowAnnotationEntries(ann.name, entries);
+        });
+        return;
+      }
+      this.rowAnnotation = null;
+      this.handleRow(trimmed.slice(1), indent, lineNo, trimmed[0]!);
       return;
     }
+    this.rowAnnotation = null;
     if (trimmed.startsWith('[')) {
       this.warn('UNEXPECTED_DATA_LINE', `Field lists are not allowed in @data: "${trimmed}"`, lineNo);
       return;
@@ -538,7 +876,14 @@ export class IcfParser {
         parentObject.set(name, arr);
         const frame: DataFrame = { kind: 'collection', node: arr, schemaNode: schemaChild, indent };
         this.dataStack.push(frame);
-        if (isCompact) this.appendCollectionRow(frame, after, lineNo);
+        if (isCompact) {
+          this.warn(
+            'COMPACT_COLLECTION_SYNTAX',
+            `Compact object syntax on collection "${name}" (spec §43: singletons only)`,
+            lineNo,
+          );
+          this.submitRow(after, lineNo, indent, (text, line) => this.appendCollectionRow(frame, text, line));
+        }
       } else {
         const frame: Extract<DataFrame, { kind: 'leaf' }> = {
           kind: 'leaf',
@@ -549,7 +894,7 @@ export class IcfParser {
           filled: false,
         };
         this.dataStack.push(frame);
-        if (isCompact) this.fillLeaf(frame, after, lineNo);
+        if (isCompact) this.submitRow(after, lineNo, indent, (text, line) => this.fillLeaf(frame, text, line));
       }
     } else {
       if (isCompact) {
@@ -561,16 +906,22 @@ export class IcfParser {
     }
   }
 
-  private handleRow(rawValue: string, indent: number, lineNo: number): void {
+  private handleRow(rawValue: string, indent: number, lineNo: number, marker: string): void {
     this.popData(indent);
     const owner = this.dataStack[this.dataStack.length - 1]!;
     if (owner.kind === 'collection') {
-      this.appendCollectionRow(owner, rawValue, lineNo);
+      if (marker === '=') {
+        this.warn('WRONG_ROW_MARKER', `Collection rows should use "-" (spec §42)`, lineNo);
+      }
+      this.submitRow(rawValue, lineNo, indent, (text, line) => this.appendCollectionRow(owner, text, line));
     } else if (owner.kind === 'leaf') {
+      if (marker === '-') {
+        this.warn('WRONG_ROW_MARKER', `Singleton object rows should use "=" (spec §41)`, lineNo);
+      }
       if (owner.filled) {
         this.error('MULTIPLE_ROWS_FOR_OBJECT', `Leaf object "${owner.name}" already has a row`, lineNo);
       }
-      this.fillLeaf(owner, rawValue, lineNo);
+      this.submitRow(rawValue, lineNo, indent, (text, line) => this.fillLeaf(owner, text, line));
     } else if (owner.indent === -1) {
       this.error('ROW_WITHOUT_OWNER', 'Row appears with no owning node', lineNo);
     } else {
@@ -580,8 +931,11 @@ export class IcfParser {
 
   private fillLeaf(frame: Extract<DataFrame, { kind: 'leaf' }>, rawValue: string, lineNo: number): void {
     const values = splitAndUnescape(rawValue, this.delimiter, this.escape);
-    frame.parentObject.set(frame.name, this.buildObject(frame.schemaNode.getFields(), values, lineNo));
+    const obj = this.buildObject(frame.schemaNode.getFields(), values, lineNo);
+    frame.parentObject.set(frame.name, obj);
     frame.filled = true;
+    this.lastRowObject = obj;
+    this.registerRow(frame.schemaNode, obj, lineNo);
   }
 
   private appendCollectionRow(
@@ -590,11 +944,29 @@ export class IcfParser {
     lineNo: number,
   ): void {
     const values = splitAndUnescape(rawValue, this.delimiter, this.escape);
-    frame.node.add(this.buildObject(frame.schemaNode.getFields(), values, lineNo));
+    const obj = this.buildObject(frame.schemaNode.getFields(), values, lineNo);
+    frame.node.add(obj);
+    this.lastRowObject = obj;
+    this.registerRow(frame.schemaNode, obj, lineNo);
+  }
+
+  /** Registers a row against its schema node for `!constraints` validation. */
+  private registerRow(node: SchemaNode | null, obj: IcfObject, line: number): void {
+    if (!node) return;
+    const rows = this.rowsByNode.get(node);
+    if (rows) rows.push({ obj, line });
+    else this.rowsByNode.set(node, [{ obj, line }]);
   }
 
   private buildObject(fields: string[], values: string[], lineNo: number): IcfObject {
     const obj = new IcfObject();
+    const record =
+      this.section === Section.DATA && this.records.length > 0
+        ? this.records[this.records.length - 1]!
+        : null;
+    for (const v of values) {
+      if (REFERENCE_CANDIDATE.test(v)) this.refChecks.push({ line: lineNo, value: v, record });
+    }
     if (fields.length === 0) {
       // No declared fields — synthesize positional field names so the data
       // is still navigable (e.g. masters with no schema).
@@ -729,7 +1101,111 @@ export class IcfParser {
         }
       }
     }
+
+    // Primary objects (spec v1.1 §39): every name in `primary=` must exist
+    // as an object within the record body. Non-fatal.
+    for (let i = 0; i < this.records.length; i++) {
+      const record = this.records[i]!;
+      for (const name of record.getPrimary()) {
+        if (!containsNodeNamed(record.getData(), name)) {
+          this.warn(
+            'PRIMARY_OBJECT_NOT_FOUND',
+            `Primary object "${name}" does not exist in the record`,
+            this.recordLines[i] ?? 0,
+          );
+        }
+      }
+    }
+
+    // Referential integrity (spec v1.1 §44–§45): a `Type:Id` value resolves
+    // record-local primary objects first, then declared master types. This
+    // covers references in @data records AND master-to-master (foreign-key)
+    // references inside @masters. Non-fatal — values are never rejected.
+    for (const { line, value, record } of this.refChecks) {
+      const idx = value.indexOf(':');
+      const type = value.slice(0, idx);
+      const id = value.slice(idx + 1);
+      if (record !== null && record.getPrimary().includes(type)) {
+        if (findPrimaryObject(record.getData(), type, id) !== null) continue;
+        // spec §45 order: a primary miss still falls back to global masters
+        if (this.masters.hasType(type) && this.masters.resolveReference(value) !== null) continue;
+        this.warn(
+          'UNRESOLVED_PRIMARY_REFERENCE',
+          `Reference "${value}" does not resolve to any record-local "${type}" primary object`,
+          line,
+        );
+        continue;
+      }
+      if (!this.masters.hasType(type)) continue; // not a master reference
+      if (this.masters.resolveReference(value) === null) {
+        this.warn(
+          'UNRESOLVED_MASTER_REFERENCE',
+          `Reference "${value}" does not resolve to any "${type}" master record`,
+          line,
+        );
+      }
+    }
+
+    this.validateConstraints();
   }
+
+  // `!constraints` (spec v1.1 §29, §65): `required` and `unique`, validated
+  // over every row bound to the schema object across the whole document
+  // (masters + all records). Warnings only — never invalidates the document.
+  private validateConstraints(): void {
+    const unknownKeywords = new Set<string>();
+    for (const [node, rows] of this.rowsByNode) {
+      for (const [field, keywords] of node.getConstraints()) {
+        for (const keyword of keywords) {
+          if (keyword === 'required') {
+            for (const { obj, line } of rows) {
+              const v = obj.get(field);
+              if (!v || v.isMissing() || (v.isString() && v.asText() === '')) {
+                this.warn(
+                  'REQUIRED_FIELD_MISSING',
+                  `Required field "${field}" of "${node.name}" is missing or empty`,
+                  line,
+                );
+              }
+            }
+          } else if (keyword === 'unique') {
+            const seen = new Set<string>();
+            for (const { obj, line } of rows) {
+              const v = obj.get(field);
+              if (!v || v.isNull() || v.isMissing()) continue;
+              const text = v.asText();
+              if (text === '') continue;
+              if (seen.has(text)) {
+                this.warn(
+                  'UNIQUE_CONSTRAINT_VIOLATION',
+                  `Duplicate value "${text}" for unique field "${field}" of "${node.name}"`,
+                  line,
+                );
+              } else {
+                seen.add(text);
+              }
+            }
+          } else if (!unknownKeywords.has(keyword)) {
+            unknownKeywords.add(keyword); // once per keyword, document-wide
+            this.warn(
+              'UNKNOWN_CONSTRAINT',
+              `Unknown constraint keyword "${keyword}" on field "${field}" of "${node.name}"`,
+              0,
+            );
+          }
+        }
+      }
+    }
+  }
+}
+
+/** True when the object tree contains a field named `name` at any depth. */
+function containsNodeNamed(data: IcfObject, name: string): boolean {
+  for (const [key, value] of data.fields()) {
+    if (key === name) return true;
+    if (value.isObject() && containsNodeNamed(value, name)) return true;
+  }
+  return false;
 }
 
 function lineNo(lines: string[]): number {

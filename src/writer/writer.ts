@@ -130,6 +130,7 @@ export class IcfWriter {
       throw new IcfWriteError('Record root must be an object or array');
     }
     const metadata = new IcfMetadata();
+    metadata.put('version', '1.1'); // spec §14: programmatic documents default to the current version
     return new IcfDocument(metadata, schema, new IcfMasters(), records);
   }
 
@@ -214,8 +215,31 @@ export class IcfWriter {
       const fields = node.getFields().map((f) => escapeName(f, delimiter, escapeChar));
       lines.push(`${fieldIndent}[${fields.join(', ')}]`);
     }
+    // schema annotations (spec v1.1 §22 order: fields, annotations, children)
+    if (node.hasAnnotations()) {
+      this.writeAnnotations(node.getAnnotations(), depth + 1, lines, delimiter, escapeChar);
+    }
     for (const child of node.getChildren().values()) {
       this.writeSchemaNode(child, depth + 1, lines, delimiter, escapeChar);
+    }
+  }
+
+  /** Emits `!name:` + one `=` entry row per annotation (schema or row). */
+  private writeAnnotations(
+    annotations: Map<string, string[]>,
+    depth: number,
+    lines: string[],
+    delimiter: string,
+    escapeChar: string,
+  ): void {
+    const annIndent = ' '.repeat(depth * this.options.indentWidth);
+    const entryIndent = ' '.repeat((depth + 1) * this.options.indentWidth);
+    for (const [name, entries] of annotations) {
+      lines.push(`${annIndent}!${escapeName(name, delimiter, escapeChar)}:`);
+      if (entries.length > 0) {
+        const cells = entries.map((e) => escapeValue(e, delimiter, escapeChar));
+        lines.push(`${entryIndent}= ${cells.join(`${delimiter} `)}`);
+      }
     }
   }
 
@@ -234,6 +258,9 @@ export class IcfWriter {
         if (!el.isObject()) throw new IcfWriteError(`Master entry of type "${type}" is not an object`);
         const fields = schemaNode && schemaNode.getFields().length > 0 ? schemaNode.getFields() : el.fieldNames();
         lines.push(`${rowIndent}${marker} ${this.renderRow(el, fields, delimiter, escapeChar)}`);
+        if (el.hasRowAnnotations()) {
+          this.writeAnnotations(el.getRowAnnotations(), 1, lines, delimiter, escapeChar);
+        }
       }
       lines.push('');
     }
@@ -333,6 +360,9 @@ export class IcfWriter {
           ? this.renderRow(el, schemaNode.getFields(), delimiter, escapeChar)
           : this.renderScalar(el, delimiter, escapeChar);
         lines.push(`${rowIndent}- ${row}`);
+        if (el.isObject() && el.hasRowAnnotations()) {
+          this.writeAnnotations(el.getRowAnnotations(), depth + 1, lines, delimiter, escapeChar);
+        }
       }
       return;
     }
@@ -344,6 +374,9 @@ export class IcfWriter {
     lines.push(`${indent}${nodeName}:`);
     const rowIndent = ' '.repeat((depth + 1) * this.options.indentWidth);
     lines.push(`${rowIndent}= ${this.renderRow(data, schemaNode.getFields(), delimiter, escapeChar)}`);
+    if (data.isObject() && data.hasRowAnnotations()) {
+      this.writeAnnotations(data.getRowAnnotations(), depth + 1, lines, delimiter, escapeChar);
+    }
   }
 
   private tryTextBlock(

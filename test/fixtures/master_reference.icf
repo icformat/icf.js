@@ -1,0 +1,33 @@
+@kind icf
+@version 1.0
+@encoding utf-8
+@delimiter comma
+@escape backslash
+
+@schema
+
+masters:
+
+  Vendor[]:
+    [VendorID, Name, City]
+
+  Project[]:
+    [ProjectID, Name, Location, VendorRef]
+
+documentindex:
+  [InvoiceNo, ProjectRef]
+
+@masters
+
+Vendor:
+  - V001, ABC Developers, Chennai
+
+Project:
+  - P001, XYZ Project, Coimbatore, Vendor:V001
+
+@data
+
+@record id=INV001
+
+documentindex:
+  = INV-2026-001, Project:P001

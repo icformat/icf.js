@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-**`icf.js`** is a small, zero-dependency **browser** library (TypeScript) that parses, validates, builds in-memory, writes, and converts **Indent Comma Format (ICF)** text, and generates **ICX** companion indexes. It is a faithful behavioral port of the Java library [`icfj`](https://github.com/icformat/icfj), adapted for the browser.
+**`icf.js`** is a small, zero-dependency **browser & Node** library (TypeScript) that parses, validates, builds in-memory, writes, and converts **Indent Comma Format (ICF)** text, and generates **ICX** companion indexes. It implements **ICF spec v1.1** (schema annotations, row `!overrides`, primary objects, multiline rows, constraint validation). It is a faithful behavioral port of the Java library [`icfj`](https://github.com/icformat/icfj), adapted for the browser and Node.
 
-The format specs live at [icformat.org](https://icformat.org): the **ICF format specification (v1)** and the **ICX index specification (v1)**. Read those before changing parser/writer behavior. When the spec is ambiguous, `icfj`'s observable behavior is the tiebreaker — `icf.js` mirrors its names almost 1:1 (the Java API is already camelCase).
+The format specs live at [icformat.org](https://icformat.org): the **ICF language specification (v1.1)** and the **ICX index specification (v1.1)** (ICX 1.1 aligns ICX with ICF indentation + reserved-name rules; shared structure renamed `recordindex[]`). Read those before changing parser/writer behavior. The uniform cross-library v1.1 behavior contract is `F:\git\GreenbooksGithub\icf_v1.1_library_upgrade_checklist.md` — the sibling libraries (`icfj`, `icfpy`) must emit the same diagnostic codes with the same severities. When the spec is ambiguous, `icfj`'s observable behavior is the tiebreaker — `icf.js` mirrors its names almost 1:1 (the Java API is already camelCase).
 
 Like `icfj`, this library generates ICX **as another `IcfDocument`** (via `IcxGenerator` / `generateIcx(...)`) which is then serialized with the standard `IcfWriter`. Output uses standard ICF row syntax (`= a, b, c`) rather than the spec's bare-row form, so it round-trips through this library's parser. There is no dedicated ICX parser; ICX text is read back via the regular `parse(...)`.
 
@@ -22,7 +22,7 @@ npm run typecheck   # tsc --noEmit for src and tests
 npm run build       # tsup -> dist/ (ESM + IIFE + min + .d.ts)
 ```
 
-**Build outputs (tsup):** `dist/icf.js` (ESM), `dist/icf.global.js` (IIFE exposing `window.ICF`), `dist/icf.min.js` (minified IIFE), and `dist/index.d.ts`. The `package.json` `exports`/`module`/`types`/`unpkg`/`jsdelivr` fields point at these. Published to npm and served via jsDelivr from GitHub tags.
+**Build outputs (tsup):** `dist/icf.js` (ESM), `dist/icf.cjs` (CommonJS for Node `require`), `dist/icf.global.js` (IIFE exposing `window.ICF`), `dist/icf.min.js` (minified IIFE), and `dist/index.d.ts`. The `package.json` `exports`/`module`/`types`/`unpkg`/`jsdelivr` fields point at these. Published to npm and served via jsDelivr from GitHub tags.
 
 There is no separate lint step — the TypeScript compiler is the only static check.
 
@@ -73,17 +73,18 @@ When changing parser or writer behavior, preserve this invariant or you'll break
    - `escapeAttribute(...)` — for `@record` attribute values: escapes whitespace and the escape char, but **not** `=` (the parser splits attributes on the first `=`).
    `unescape(...)` reverses all three on read.
 3. **Record attributes.** Tokenized with escape awareness so `note=South\ Zone` survives. Reserved names with shorthand getters on `IcfRecord`: `id`, `uuid`, `created`, `modified`, `revision`, `schema`. `schema=` drives multi-schema record interpretation.
-4. **Row markers** (spec §9/§12). `=` is the single-row-object marker; `-` is the collection-row marker. The parser accepts either in every context. The writer chooses by `SchemaNode.isCollection()` — collections get `-`, leaf objects get `=`. For masters, the type's schema declaration (`Vendor[]:` vs `Vendor:`) drives the same choice.
+4. **Row markers** (spec §41–§42). `=` is the singleton marker; `-` is the collection marker. The parser accepts either in every context but emits a non-fatal `WRONG_ROW_MARKER` warning on a mismatch (v1.1 made the discipline normative). The writer chooses by `SchemaNode.isCollection()` — collections get `-`, leaf objects get `=`. For masters, the type's schema declaration (`Vendor[]:` vs `Vendor:`) drives the same choice.
+4b. **v1.1 features** live in: `SchemaNode` annotations (`getAnnotations/getIndexes/getDefaults/getConstraints/getExpressions`), `IcfObject` row annotations (`getRowAnnotations/getOverrides`), `IcfRecord.getPrimary()/getChecksum()`, `src/resolver.ts` (primary-first `resolveReference`, `resolveRecordData` deep-copy defaults+overrides), multiline-row continuation (`pendingRow`/`submitRow` in the parser — rows ending with a trailing unescaped delimiter continue on following lines), and constraint validation in `finalValidation`. Parsing stays raw; resolution is an explicit API. Annotation entries are stored as raw strings (round-trip source of truth); the typed views parse on demand.
 5. **Compact Object Syntax** (spec §12). `Vendor:VEN001, ABC, City` ≡ `Vendor:` + `= VEN001, ABC, City`. Detection: line doesn't start with a structural char (`= - << [ @`), the first unescaped colon has no whitespace before it (and the name part has no whitespace), and ≥1 char follows the colon. Master references inside `= ...` rows are *not* compact syntax.
 6. **UTF-8 BOM** (spec §24). A single leading `﻿` is stripped at the top of `parse`.
-7. **Version compatibility** (spec §23). `IcfParser.SUPPORTED_MAJOR_VERSION` / `SUPPORTED_MINOR_VERSION` = 1.0. Higher major → `UNSUPPORTED_MAJOR_VERSION` error + best-effort continue; higher minor → `HIGHER_MINOR_VERSION` warning + continue.
+7. **Version compatibility** (spec §74). `IcfParser.SUPPORTED_MAJOR_VERSION` / `SUPPORTED_MINOR_VERSION` = 1.1. Higher major → `UNSUPPORTED_MAJOR_VERSION` error + best-effort continue; higher minor (1.2+) → `HIGHER_MINOR_VERSION` warning + continue.
 8. **Preformatted text blocks** (spec §18). `<<TAG ... TAG>>` opens a verbatim region under a leaf. Mode state is checked at the very top of the parse loop, so `@`-directives, `#`, and structural chars are deliberately not interpreted while a block is open. The parser strips the opening tag's indentation prefix from each content line (YAML literal-block style); the writer re-applies it. Together they make multiline values stable across parse → write → parse. The block fills the leaf's only field (the first declared field, or `field1`).
 9. **Two master-schema styles.** Both round-trip: (a) legacy `masters:` container with type children inside any schema; (b) new style where master types are top-level collections inside a dedicated `@schema id=Masters` block. `masterTypeSchema` / `findMasterTypeSchema` search legacy-container-first then top-level; the writer mirrors that order.
 10. **`@kind` and `@records`** are special-cased in `render`:
     - `@kind` is always emitted **first**, defaulting to `"icf"`. `IcxGenerator` seeds `@kind icx`.
     - `@records` is auto-computed from the record count unless the metadata carries an explicit value. `IcxGenerator` sets an explicit `@records` (master rows + source records), because the ICX document holds all index collections in a single synthetic ICF record. Both keys are skipped in the generic directive loop to avoid duplicate emission.
 11. **Multiple `@schema id=X`** blocks are keyed in `IcfSchemas`; records select via `schema=`, else the default (anonymous if present, else the first declared).
-12. **ICX shared `index[]` fallback** (ICX §5). When a `@masters`/`@data` type isn't declared, the parser synthesizes a `SchemaNode` from the document's top-level `index` / `index[]` node fields. `findSharedIndexFields` is the single source of truth; both master lookup and record-data lookup use it.
+12. **ICX shared-index fallback** (ICX v1.1 §6). When a `@masters`/`@data` type isn't declared, the parser synthesizes a `SchemaNode` from the document's top-level `recordindex`/`recordindex[]` node (ICX 1.1), falling back to the legacy `index`/`index[]` (ICX 1.0 — its reserved name now draws a non-fatal `RESERVED_OBJECT_NAME` warning). `findSharedIndexFields` is the single source of truth; both master lookup and record-data lookup use it. `IcxGenerator` emits per-type collections and `@version 1.1`.
 13. **Scalar arrays aren't native.** The writer materializes `["a","b"]` as rows of a single-field object using `WriterOptions.scalarArrayField` (default `"value"`). Round-trip of `["a","b"]` becomes `[{value:"a"},{value:"b"}]` — by design.
 14. **Section order + state machine.** HEADER → METADATA → SCHEMA → MASTERS → DATA. Schema/data use indentation stacks; masters use a flat current-type pointer.
 15. **Indentation.** 2-space; a tab counts as 1 column and emits a non-fatal `TAB_INDENT` warning.
@@ -119,7 +120,8 @@ The facade resolves the document, computes the checksum over `canonicalContentBy
 
 ## Test layout
 
-Vitest (`happy-dom`). Four canonical fixtures in `test/fixtures/`, with the four round-trip tests as the strongest correctness checks (run these first whenever you change parser or writer output):
+Vitest (`happy-dom`). Canonical fixtures in `test/fixtures/`, with the round-trip tests as the strongest correctness checks (run these first whenever you change parser or writer output):
+- `employee_v11.icf` — the v1.1 kitchen sink: `@version 1.1`, `@metadata`, two `@schema id=` blocks, all four standard schema annotations, masters with a master→master FK, `primary=` + primary references, `!overrides` on a collection row, multiline rows, compact singleton syntax, and a text block.
 - `invoice.icf` — single anonymous schema with a nested container and a collection; no masters/attributes.
 - `invoice_with_masters.icf` — legacy `masters:` container, master references, and an escaped-whitespace attribute (`note=South\ Zone`).
 - `multi_schema.icf` — `@metadata`, multiple `@schema id=...` blocks, top-level master collections, `-` master rows, and `@record schema=...`.

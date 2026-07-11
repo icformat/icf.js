@@ -6,6 +6,9 @@
  * collection** (`Name[]:` → zero-or-more rows → array).
  */
 
+/** Standard schema annotation names (spec v1.1 §26). */
+export const STANDARD_SCHEMA_ANNOTATIONS = ['indexes', 'defaults', 'constraints', 'expressions'] as const;
+
 /** One node in a schema tree. */
 export class SchemaNode {
   name: string;
@@ -13,6 +16,8 @@ export class SchemaNode {
   /** Declared field names, in order (scalar fields, or child names on a container). */
   fields: string[] = [];
   private readonly childMap = new Map<string, SchemaNode>();
+  /** `!annotation` entries (spec v1.1 §25), lazily created. */
+  private annotationMap: Map<string, string[]> | null = null;
 
   constructor(name = '', collection = false) {
     this.name = name;
@@ -56,6 +61,72 @@ export class SchemaNode {
   addChild(child: SchemaNode): void {
     this.childMap.set(child.name, child);
   }
+
+  // ---- schema annotations (spec v1.1 §25–§31) ----------------------------
+
+  hasAnnotations(): boolean {
+    return this.annotationMap !== null && this.annotationMap.size > 0;
+  }
+
+  /** Ordered `annotationName → entries` map (live view; created on demand). */
+  getAnnotations(): Map<string, string[]> {
+    if (this.annotationMap === null) this.annotationMap = new Map();
+    return this.annotationMap;
+  }
+
+  /** Entries of one annotation, or `[]` when absent. */
+  getAnnotation(name: string): string[] {
+    return this.annotationMap?.get(name) ?? [];
+  }
+
+  /** Appends entries to an annotation (same name merges — spec §25). */
+  addAnnotationEntries(name: string, entries: string[]): void {
+    const map = this.getAnnotations();
+    const existing = map.get(name);
+    if (existing) existing.push(...entries);
+    else map.set(name, [...entries]);
+  }
+
+  /** `!indexes` entries, e.g. `["empid", "department+empid"]` (spec §27). */
+  getIndexes(): string[] {
+    return [...this.getAnnotation('indexes')];
+  }
+
+  /** `!defaults` parsed as `field → value` from `k=v` entries (spec §28). */
+  getDefaults(): Map<string, string> {
+    return parseAssignments(this.getAnnotation('defaults'));
+  }
+
+  /** `!constraints` parsed as `field → keywords` from `field:kw` entries (spec §29). */
+  getConstraints(): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    for (const entry of this.getAnnotation('constraints')) {
+      const idx = entry.indexOf(':');
+      if (idx <= 0) continue; // malformed — reported by the parser, preserved raw
+      const field = entry.slice(0, idx).trim();
+      const keyword = entry.slice(idx + 1).trim();
+      const list = out.get(field);
+      if (list) list.push(keyword);
+      else out.set(field, [keyword]);
+    }
+    return out;
+  }
+
+  /** `!expressions` parsed as `field → expression` from `k=expr` entries (spec §30). */
+  getExpressions(): Map<string, string> {
+    return parseAssignments(this.getAnnotation('expressions'));
+  }
+}
+
+/** Parses `key=value` entries into an ordered map (first `=` splits). */
+function parseAssignments(entries: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const entry of entries) {
+    const idx = entry.indexOf('=');
+    if (idx <= 0) continue; // malformed — reported by the parser, preserved raw
+    out.set(entry.slice(0, idx).trim(), entry.slice(idx + 1).trim());
+  }
+  return out;
 }
 
 /** A single schema tree (the body of one `@schema` block). */

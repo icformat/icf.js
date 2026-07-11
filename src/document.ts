@@ -8,6 +8,7 @@ import { IcfArray, IcfNode, IcfObject } from './model/node.js';
 import { IcfMetadata } from './model/metadata.js';
 import { IcfMasters } from './model/masters.js';
 import { IcfSchema, IcfSchemas } from './model/schema.js';
+import { resolveRecordData, resolveReference } from './resolver.js';
 
 /** A single `@record` block: its attributes plus the record body. */
 export class IcfRecord {
@@ -48,6 +49,19 @@ export class IcfRecord {
   /** The `schema=` attribute — which `@schema id=...` this record uses. */
   getSchemaId(): string | null {
     return this.getAttribute('schema');
+  }
+  /** The `checksum=` attribute (spec v1.1 §38). */
+  getChecksum(): string | null {
+    return this.getAttribute('checksum');
+  }
+  /** Object names from the `primary=` attribute (spec v1.1 §39); `[]` when absent. */
+  getPrimary(): string[] {
+    const raw = this.getAttribute('primary');
+    if (raw === null) return [];
+    return raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== '');
   }
 }
 
@@ -107,6 +121,25 @@ export class IcfDocument {
 
   getRecord(index: number): IcfRecord | null {
     return this.records[index] ?? null;
+  }
+
+  /**
+   * Resolves a `Type:Id` reference (spec v1.1 §45 order): the record's
+   * `primary=` objects first, then global masters. `record` may be `null`
+   * for masters-only resolution.
+   */
+  resolveReference(record: IcfRecord | null, reference: string): IcfObject | null {
+    return resolveReference(this, record, reference);
+  }
+
+  /**
+   * A deep copy of a record's body with `!defaults` and `!overrides` applied
+   * (processing model Phase 5). The parsed model is never mutated.
+   */
+  getResolvedRecordData(record: IcfRecord | number): IcfObject | null {
+    const target = typeof record === 'number' ? this.getRecord(record) : record;
+    if (!target) return null;
+    return resolveRecordData(this, target);
   }
 
   /** One record → its object; otherwise an array of record objects. */

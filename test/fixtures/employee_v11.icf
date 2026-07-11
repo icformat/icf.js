@@ -1,0 +1,84 @@
+@kind icf
+@version 1.1
+@delimiter comma
+@escape backslash
+@revision 2
+@index employee_v11.icx
+
+@metadata
+
+title: Employee Register
+department: Human Resources
+
+@schema id=Employee
+
+employee:
+  [empid, empname, empemail]
+  !indexes:
+    = empid
+  !defaults:
+    = empstatus=employed,
+      idstatus=issued
+  !constraints:
+    = empid:unique,
+      empemail:required
+
+designation[]:
+  [desigid, designame]
+
+salary[]:
+  [desigref, month, year, amount, total]
+  !expressions:
+    = total=amount+amount*0.25
+
+notes:
+  [text]
+
+@schema id=Masters
+
+Vendor[]:
+  [VendorID, Name, City]
+
+Project[]:
+  [ProjectID, Location, VendorRef]
+
+@masters
+
+Vendor:
+  - VEN001, ABC Traders, Chennai
+  - VEN002, XYZ Suppliers, Coimbatore
+
+Project:
+  - PRJ001,
+    Coimbatore,
+    Vendor:VEN001
+
+@data
+
+@record id=1001 schema=Employee primary=designation
+
+employee:
+  = 1,
+    Anand,
+    anand@example.com
+
+designation:
+  - MGR01, Manager
+  - DEV01, Developer
+
+salary:
+  - designation:MGR01, Jan, 2026, 52000, 65000
+  !overrides:
+    = idstatus=tobeissued
+  - designation:DEV01, Feb, 2026, 48000, 60000
+
+notes:
+
+  <<TEXT
+  Joined via campus placement.
+  Confirmed after probation.
+  TEXT>>
+
+@record id=1002 schema=Employee
+
+employee:2, Bharat, bharat@example.com

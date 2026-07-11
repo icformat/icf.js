@@ -56,7 +56,7 @@ export class IcxGenerator {
   ];
   static readonly SCHEMA_ATTRIBUTE = 'schema';
   static readonly RECORD_TYPE_ATTRIBUTE = 'type';
-  static readonly DEFAULT_ICX_VERSION = '1.0';
+  static readonly DEFAULT_ICX_VERSION = '1.1';
 
   /** Builds the ICX index with empty positional and checksum fields. */
   generate(source: IcfDocument, sourceFileName?: string): IcfDocument {

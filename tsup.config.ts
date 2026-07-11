@@ -12,6 +12,15 @@ export default defineConfig([
     target: 'es2020',
     outExtension: () => ({ js: '.js' }),
   },
+  // CommonJS build for Node require()
+  {
+    entry: { icf: 'src/index.ts' },
+    format: ['cjs'],
+    sourcemap: true,
+    treeshake: true,
+    target: 'es2020',
+    outExtension: () => ({ js: '.cjs' }),
+  },
   // IIFE global (window.ICF), readable
   {
     entry: { 'icf.global': 'src/index.ts' },
