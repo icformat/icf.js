@@ -108,6 +108,8 @@ Differences from `icfj` (browser deltas): no file/stream overloads; **checksums 
 | `parse(text: string): IcfDocument` | Parses ICF text. Throws `IcfParseError` if it contains error-level diagnostics. |
 | `parseLenient(text: string): IcfDocument` | Best-effort parse, never throws on content errors. Inspect issues via `validate(...)`. |
 
+Comment lines (spec v1.1 §55) — lines whose first non-blank character is `#` (`IcfParser.COMMENT_CHAR`) — are ignored everywhere outside preformatted text blocks, exactly like blank lines. Comments are discarded on parse (the spec permits this), so the writer never re-emits them and they never affect checksums.
+
 ### Validate
 | Function | Description |
 |---|---|

@@ -101,6 +101,8 @@ export class IcfParser {
   static readonly SUPPORTED_MAJOR_VERSION = 1;
   /** Highest ICF minor version this parser implements. */
   static readonly SUPPORTED_MINOR_VERSION = 1;
+  /** The default comment character (spec v1.1 §55). */
+  static readonly COMMENT_CHAR = '#';
 
   private readonly messages: ValidationMessage[] = [];
   private metadata!: IcfMetadata;
@@ -161,6 +163,10 @@ export class IcfParser {
 
       const trimmed = raw.trim();
       if (trimmed === '') continue; // empty lines ignored outside text blocks (pending rows persist)
+      // Comment lines (spec v1.1 §55): a line whose first non-blank character is
+      // the comment character is ignored everywhere outside text blocks, exactly
+      // like a blank line (pending rows persist; semantics never affected).
+      if (trimmed.startsWith(IcfParser.COMMENT_CHAR)) continue;
 
       const { indent, hadTab } = this.indentOf(raw);
 

@@ -186,3 +186,83 @@ describe('spec compliance', () => {
     expect(invoice.path(0).path('Checksum').asText()).toBe('sha256:abc');
   });
 });
+
+describe('comments (spec v1.1 §55)', () => {
+  it('ignores # comment lines in every section with no diagnostics', () => {
+    const icf = [
+      '# file-level comment before any directive',
+      '@kind icf',
+      '# between header directives',
+      '@version 1.1',
+      '@metadata',
+      '# inside metadata',
+      'department: Sales',
+      '@schema',
+      '',
+      '# Employee Master Data',
+      'Vendor:',
+      '  # about the field list',
+      '  [VendorID, Name, City]',
+      '',
+      '@masters',
+      '# masters comment',
+      'Vendor:',
+      '  = V1, ABC, Pune',
+      '',
+      '@data',
+      '',
+      '# record follows',
+      '@record',
+      '',
+      'Vendor:',
+      '  # indented comment between rows',
+      '  = V1, ABC, Pune',
+      '',
+    ].join('\n');
+    const result = validate(icf);
+    expect(result.getMessages()).toEqual([]);
+    const doc = parse(icf);
+    expect(doc.getMetadata().getUserMetadata('department')).toBe('Sales');
+    expect(doc.getRecord(0)!.getData().path('Vendor').path('Name').asText()).toBe('ABC');
+  });
+
+  it('does not terminate a pending multiline row', () => {
+    const icf = [
+      HEADER,
+      '@record',
+      '',
+      'Vendor:',
+      '  = V1,',
+      '  # comment amid a multiline row',
+      '    ABC,',
+      '    Pune',
+      '',
+    ].join('\n');
+    const doc = parse(icf);
+    const vendor = doc.getRecord(0)!.getData().path('Vendor');
+    expect(vendor.path('Name').asText()).toBe('ABC');
+    expect(vendor.path('City').asText()).toBe('Pune');
+  });
+
+  it('treats # inside a text block as ordinary text (spec §57)', () => {
+    const icf = [
+      '@kind icf',
+      '@schema',
+      '',
+      'Note:',
+      '  [Text]',
+      '',
+      '@data',
+      '',
+      '@record',
+      '',
+      'Note:',
+      '  <<TXT',
+      '  # not a comment',
+      '  TXT>>',
+      '',
+    ].join('\n');
+    const doc = parse(icf);
+    expect(doc.getRecord(0)!.getData().path('Note').path('Text').asText()).toBe('# not a comment');
+  });
+});

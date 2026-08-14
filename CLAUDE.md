@@ -88,7 +88,8 @@ When changing parser or writer behavior, preserve this invariant or you'll break
 13. **Scalar arrays aren't native.** The writer materializes `["a","b"]` as rows of a single-field object using `WriterOptions.scalarArrayField` (default `"value"`). Round-trip of `["a","b"]` becomes `[{value:"a"},{value:"b"}]` — by design.
 14. **Section order + state machine.** HEADER → METADATA → SCHEMA → MASTERS → DATA. Schema/data use indentation stacks; masters use a flat current-type pointer.
 15. **Indentation.** 2-space; a tab counts as 1 column and emits a non-fatal `TAB_INDENT` warning.
-16. **Resilient parser.** `IcfParser.parse` never throws on content errors — it accumulates `ValidationMessage`s and returns a best-effort document in a `ParseResult`. The facade `parse` throws `IcfParseError` when any ERROR-severity message exists; `parseLenient` never throws. Preserve stable diagnostic codes (`ROW_ON_CONTAINER`, `TAB_INDENT`, version codes, etc.).
+16. **Comments** (spec v1.1 §55). A line whose first non-blank character is `#` (`IcfParser.COMMENT_CHAR`) is skipped exactly like a blank line — everywhere outside text blocks, never terminating a pending multiline row, never drawing `TAB_INDENT`. Discarded on parse (spec permits it), so the writer never re-emits them and checksums are unaffected.
+17. **Resilient parser.** `IcfParser.parse` never throws on content errors — it accumulates `ValidationMessage`s and returns a best-effort document in a `ParseResult`. The facade `parse` throws `IcfParseError` when any ERROR-severity message exists; `parseLenient` never throws. Preserve stable diagnostic codes (`ROW_ON_CONTAINER`, `TAB_INDENT`, version codes, etc.).
 
 ## Checksums (`src/checksum.ts`)
 
@@ -128,3 +129,9 @@ Vitest (`happy-dom`). Canonical fixtures in `test/fixtures/`, with the round-tri
 - `textblock.icf` — text blocks under leaf nodes (OCR text with embedded `@record`/`#`/`:` characters, a JSON config block).
 
 The remaining suites cover the model (type/navigation/mutation, `null` vs empty, scalar arrays), spec compliance (row markers, compact syntax, version checks, BOM, `@kind`/`@records`, ICX shared-index fallback), the checksum registry (parity vectors, register/compute/unregister with global-state restore in teardown, reserved-method graceful degradation), and the writer (default emits no `@checksum`, `writeWithChecksum` matches `compute(...)`, stale `@checksum` replaced once, ICF `@checksum` ≡ ICX `@sourcechecksum`).
+
+<!-- steerai:memory -->
+## SteerAI Memory & Help
+- Past prompts and actions for this project are stored as knowledge entries under `.steerai/knowledge/` at the project root — `topics/` (distilled decisions/state), `prompts/` (raw records), `index.md` (entry point). Consult them before re-deriving past context.
+- If the user asks how SteerAI itself works, consult the user guide at `~/.steerai/help/HELP.md`.
+<!-- /steerai:memory -->
