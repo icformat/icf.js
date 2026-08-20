@@ -414,7 +414,9 @@ export class IcfParser {
     const m = /(?:^|\s)id=(\S+)/.exec(value);
     if (m) id = m[1]!;
     if (this.schemas.has(id)) {
-      this.error('DUPLICATE_SCHEMA_ID', `Duplicate schema id "${id}"`, lineNo);
+      // Non-fatal (tri-library parity, conformance ICF-1.1-DIAG-110): the later
+      // block merges into the same schema; the document stays readable.
+      this.warn('DUPLICATE_SCHEMA_ID', `Duplicate schema id "${id}"`, lineNo);
     }
     this.currentSchema = this.schemas.getOrCreate(id);
     this.schemaStack = [{ node: this.currentSchema.getRoot(), indent: -1 }];
@@ -763,6 +765,7 @@ export class IcfParser {
   }
 
   private addMasterRow(typeName: string, schema: SchemaNode | null, text: string, line: number): void {
+    if (schema) this.checkSchemaFields(schema, typeName, line);
     const fields = schema ? schema.getFields() : [];
     const values = splitAndUnescape(text, this.delimiter, this.escape);
     const obj = this.buildObject(fields, values, line);
@@ -873,8 +876,11 @@ export class IcfParser {
       schemaChild = this.synthIndexNode(name, true);
     }
     if (!schemaChild) {
-      this.warn('UNKNOWN_NODE', `No schema declaration for node "${name}"`, lineNo);
-      return;
+      // Tri-library parity (conformance ICF-1.1-DIAG-115, icfj is the
+      // tiebreaker): an undeclared data node is an ERROR, but an ephemeral
+      // schema node keeps its data; rows then draw MISSING_SCHEMA_FIELDS.
+      this.error('UNKNOWN_NODE', `No schema declaration for node "${name}"`, lineNo);
+      schemaChild = new SchemaNode(name, false);
     }
 
     if (schemaChild.isLeaf()) {
@@ -938,6 +944,7 @@ export class IcfParser {
 
   private fillLeaf(frame: Extract<DataFrame, { kind: 'leaf' }>, rawValue: string, lineNo: number): void {
     const values = splitAndUnescape(rawValue, this.delimiter, this.escape);
+    this.checkSchemaFields(frame.schemaNode, frame.name, lineNo);
     const obj = this.buildObject(frame.schemaNode.getFields(), values, lineNo);
     frame.parentObject.set(frame.name, obj);
     frame.filled = true;
@@ -951,6 +958,7 @@ export class IcfParser {
     lineNo: number,
   ): void {
     const values = splitAndUnescape(rawValue, this.delimiter, this.escape);
+    this.checkSchemaFields(frame.schemaNode, frame.schemaNode.name, lineNo);
     const obj = this.buildObject(frame.schemaNode.getFields(), values, lineNo);
     frame.node.add(obj);
     this.lastRowObject = obj;
@@ -963,6 +971,18 @@ export class IcfParser {
     const rows = this.rowsByNode.get(node);
     if (rows) rows.push({ obj, line });
     else this.rowsByNode.set(node, [{ obj, line }]);
+  }
+
+  /**
+   * A data row bound to a schema node with no declared field list is an error
+   * (tri-library parity with icfj's fillRowObject): the values are still kept
+   * under positional keys, but the schema is incomplete. Masters with no
+   * schema node at all keep their silent positional fallback.
+   */
+  private checkSchemaFields(node: SchemaNode, name: string, lineNo: number): void {
+    if (node.getFields().length === 0) {
+      this.error('MISSING_SCHEMA_FIELDS', `"${name}" has no declared fields; using positional keys`, lineNo);
+    }
   }
 
   private buildObject(fields: string[], values: string[], lineNo: number): IcfObject {

@@ -266,3 +266,21 @@ describe('comments (spec v1.1 §55)', () => {
     expect(doc.getRecord(0)!.getData().path('Note').path('Text').asText()).toBe('# not a comment');
   });
 });
+
+describe('tri-library diagnostic parity (conformance suite reconciliation)', () => {
+  it('DUPLICATE_SCHEMA_ID is a warning, not an error', () => {
+    const icf = ['@kind icf', '@schema id=A', '', 'V:', '  [x]', '', '@schema id=A', '', 'W:', '  [y]', '', '@data', '', '@record', '', 'V:', '  = 1'].join('\n');
+    const messages = validate(icf).getMessages().map((m) => `${m.getSeverity()}:${m.getCode()}`);
+    expect(messages).toContain('WARNING:DUPLICATE_SCHEMA_ID');
+    expect(messages.filter((m) => m.startsWith('ERROR'))).toEqual([]);
+  });
+
+  it('an unknown data node is an ERROR but keeps its data with positional keys', () => {
+    const icf = [HEADER, '@record', '', 'Supplier:', '  = S1, ABC', ''].join('\n');
+    const messages = validate(icf).getMessages().map((m) => `${m.getSeverity()}:${m.getCode()}`).sort();
+    expect(messages).toEqual(['ERROR:MISSING_SCHEMA_FIELDS', 'ERROR:UNKNOWN_NODE']);
+    const doc = parseLenient(icf);
+    expect(doc.getRecord(0)!.getData().path('Supplier').path('field1').asText()).toBe('S1');
+    expect(doc.getRecord(0)!.getData().path('Supplier').path('field2').asText()).toBe('ABC');
+  });
+});
